@@ -345,7 +345,40 @@ input:focus, textarea:focus {
 .file-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-item-size { color: var(--text-muted); white-space: nowrap; }
 .file-item-status { color: var(--accent); white-space: nowrap; font-size: 12px; }
-.upload-overall-text { font-size: 13px; color: var(--text-muted); }
+
+.file-item-progress {
+  grid-column: 1 / -1;
+  height: 4px;
+  background: var(--surface);
+  border-radius: 2px;
+  overflow: hidden;
+  display: none;
+}
+.file-item-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 0%;
+  transition: width .2s;
+}
+
+.upload-overall {
+  margin: 12px 0 4px;
+}
+.upload-overall-text { font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+.upload-overall-bar {
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.upload-overall-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  width: 0%;
+  transition: width .3s;
+}
 
 /* ── Style options ───────────────────────────────────────────────────────────── */
 .style-options { display: flex; flex-direction: column; gap: 8px; }

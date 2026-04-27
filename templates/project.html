@@ -119,8 +119,11 @@
       <input type="file" id="file-input" multiple accept="video/*" style="display:none">
     </div>
     <div id="file-list" class="file-list"></div>
-    <div id="upload-overall" style="display:none; margin: 10px 0;">
+    <div id="upload-overall" class="upload-overall" style="display:none;">
       <p id="upload-overall-text" class="upload-overall-text"></p>
+      <div class="upload-overall-bar">
+        <div class="upload-overall-fill" id="upload-overall-fill"></div>
+      </div>
     </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost" onclick="closeModal('upload-modal')">Cancel</button>

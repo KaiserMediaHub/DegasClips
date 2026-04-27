@@ -485,10 +485,17 @@ def download_clip(project_id, clip_id):
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
-# Run on import so gunicorn also initialises the DB and folders
-init_db()
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# Deferred init — runs on first request so the Railway volume is mounted first
+_initialized = False
+
+@app.before_request
+def ensure_initialized():
+    global _initialized
+    if not _initialized:
+        init_db()
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        _initialized = True
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

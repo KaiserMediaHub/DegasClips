@@ -58,6 +58,9 @@ function renderFileList(files) {
       <span class="file-item-name">${f.name}</span>
       <span class="file-item-size">${(f.size / 1024 / 1024).toFixed(1)} MB</span>
       <span class="file-item-status" id="file-status-${i}">Queued</span>
+      <div class="file-item-progress" id="file-progress-${i}">
+        <div class="file-item-progress-fill" id="file-progress-fill-${i}"></div>
+      </div>
     `;
     fileList.appendChild(item);
   });
@@ -71,29 +74,43 @@ async function startUploadQueue(projectId) {
   uploadBtn.disabled = true;
   uploadBtn.textContent = 'Uploading…';
 
-  const overall = document.getElementById('upload-overall');
-  if (overall) overall.style.display = 'block';
+  const overallWrap  = document.getElementById('upload-overall');
+  const overallText  = document.getElementById('upload-overall-text');
+  const overallFill  = document.getElementById('upload-overall-fill');
+  if (overallWrap) overallWrap.style.display = 'block';
+
+  let completed = 0;
 
   for (let i = 0; i < queuedFiles.length; i++) {
-    const file = queuedFiles[i];
+    const file     = queuedFiles[i];
     const statusEl = document.getElementById(`file-status-${i}`);
-    const overallEl = document.getElementById('upload-overall-text');
+    const barWrap  = document.getElementById(`file-progress-${i}`);
+    const barFill  = document.getElementById(`file-progress-fill-${i}`);
 
-    if (overallEl) overallEl.textContent = `Uploading ${i + 1} of ${queuedFiles.length}: ${file.name}`;
-    if (statusEl) statusEl.textContent = 'Uploading…';
+    if (overallText) overallText.textContent = `File ${i + 1} of ${queuedFiles.length} — ${file.name}`;
+    if (statusEl)   statusEl.textContent = 'Uploading…';
+    if (barWrap)    barWrap.style.display = 'block';
 
     try {
       await uploadFileInChunks(file, projectId, (pct) => {
+        if (barFill)  barFill.style.width  = `${pct}%`;
         if (statusEl) statusEl.textContent = `${pct}%`;
       });
+      completed++;
       if (statusEl) statusEl.textContent = '✓ Done';
+      if (barFill)  barFill.style.width  = '100%';
     } catch (err) {
       if (statusEl) statusEl.textContent = '✗ Failed';
       console.error('Upload failed for', file.name, err);
     }
+
+    // Update overall bar
+    const overallPct = Math.round((completed / queuedFiles.length) * 100);
+    if (overallFill) overallFill.style.width = `${overallPct}%`;
   }
 
-  if (overallEl) overallEl.textContent = 'All files uploaded! Reloading…';
+  if (overallText) overallText.textContent = `All ${queuedFiles.length} files uploaded!`;
+  if (overallFill) overallFill.style.width = '100%';
   setTimeout(() => {
     closeModal('upload-modal');
     location.reload();
