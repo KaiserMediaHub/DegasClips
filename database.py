@@ -1,60 +1,38 @@
+import sqlite3
 import os
-import psycopg2
-import psycopg2.extras
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
-
-class DBWrapper:
-    """
-    Thin wrapper making psycopg2 behave like our sqlite3 usage:
-    - db.execute(sql, params) returns a cursor with fetchone/fetchall
-    - db.commit() / db.close()
-    - Automatically converts ? placeholders to %s
-    - Returns RealDictRow objects (support both ["col"] and .col access in Jinja2)
-    """
-
-    def __init__(self):
-        self.conn = psycopg2.connect(DATABASE_URL)
-
-    def execute(self, sql, params=()):
-        sql = sql.replace("?", "%s")
-        cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(sql, params or None)
-        return cur
-
-    def commit(self):
-        self.conn.commit()
-
-    def close(self):
-        self.conn.close()
+DB_PATH = os.environ.get("DB_PATH", "/data/degas.db")
 
 
 def get_db():
-    return DBWrapper()
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def init_db():
-    db = get_db()
-    db.execute("""
+    conn = get_db()
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS projects (
-            id          SERIAL PRIMARY KEY,
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT NOT NULL,
             assigned_to TEXT DEFAULT '',
-            created_at  TIMESTAMP DEFAULT NOW()
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    db.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS clips (
-            id                SERIAL PRIMARY KEY,
-            project_id        INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id        INTEGER NOT NULL,
             filename          TEXT NOT NULL,
             original_filename TEXT NOT NULL,
             status            TEXT DEFAULT 'uploaded',
             error_message     TEXT,
             style             TEXT DEFAULT '1',
-            created_at        TIMESTAMP DEFAULT NOW()
+            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     """)
-    db.commit()
-    db.close()
+    conn.commit()
+    conn.close()

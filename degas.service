@@ -1,0 +1,14 @@
+[Unit]
+Description=Degas Clips Web App
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/degas
+EnvironmentFile=/opt/degas/.env
+ExecStart=/opt/degas/.venv/bin/gunicorn app:app --workers 2 --timeout 300 --bind 0.0.0.0:5000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -29,9 +29,7 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
 @app.template_filter("datestr")
 def datestr_filter(v):
-    if hasattr(v, "strftime"):
-        return v.strftime("%Y-%m-%d")
-    return str(v)[:10]
+    return str(v)[:10] if v else ""
 
 
 def allowed(filename):
@@ -81,12 +79,12 @@ def projects():
     project_list = []
     for p in rows:
         total    = db.execute(
-            "SELECT COUNT(*) AS count FROM clips WHERE project_id = ?", (p["id"],)
-        ).fetchone()["count"]
+            "SELECT COUNT(*) FROM clips WHERE project_id = ?", (p["id"],)
+        ).fetchone()[0]
         exported = db.execute(
-            "SELECT COUNT(*) AS count FROM clips WHERE project_id = ? AND status = 'exported'",
+            "SELECT COUNT(*) FROM clips WHERE project_id = ? AND status = 'exported'",
             (p["id"],)
-        ).fetchone()["count"]
+        ).fetchone()[0]
         project_list.append({
             "id":           p["id"],
             "name":         p["name"],
