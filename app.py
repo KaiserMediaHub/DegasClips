@@ -107,6 +107,21 @@ def new_project():
     return redirect(url_for("projects"))
 
 
+@app.route("/projects/<int:project_id>/edit", methods=["POST"])
+def edit_project(project_id):
+    name        = request.form.get("name", "").strip()
+    assigned_to = request.form.get("assigned_to", "").strip()
+    if name:
+        db = get_db()
+        db.execute(
+            "UPDATE projects SET name = ?, assigned_to = ? WHERE id = ?",
+            (name, assigned_to, project_id)
+        )
+        db.commit()
+        db.close()
+    return redirect(request.referrer or url_for("projects"))
+
+
 @app.route("/projects/<int:project_id>/delete", methods=["POST"])
 def delete_project(project_id):
     db = get_db()

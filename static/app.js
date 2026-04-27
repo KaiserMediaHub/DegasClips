@@ -12,6 +12,14 @@ document.addEventListener('keydown', e => {
   }
 });
 
+/* ── Edit Project ────────────────────────────────────────────────────────────── */
+function openEditModal(projectId, name, assignedTo) {
+  document.getElementById('edit-project-name').value     = name;
+  document.getElementById('edit-project-assigned').value = assignedTo;
+  document.getElementById('edit-project-form').action    = `/projects/${projectId}/edit`;
+  openModal('edit-project-modal');
+}
+
 /* ── Dropzone & Upload Queue ─────────────────────────────────────────────────── */
 const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB
 

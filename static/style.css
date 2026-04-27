@@ -180,6 +180,17 @@ input:focus, textarea:focus {
   border-color: var(--accent);
   transform: translateY(-2px);
 }
+.project-card-wrap { position: relative; }
+.card-edit-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  opacity: 0;
+  transition: opacity .15s;
+  z-index: 1;
+}
+.project-card-wrap:hover .card-edit-btn { opacity: 1; }
+
 .project-card-header {
   display: flex;
   justify-content: space-between;
