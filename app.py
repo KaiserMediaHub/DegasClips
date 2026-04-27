@@ -428,9 +428,11 @@ def download_clip(project_id, clip_id):
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
+# Run on import so gunicorn also initialises the DB and folders
+init_db()
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
 if __name__ == "__main__":
-    init_db()
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
