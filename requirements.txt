@@ -1,5 +1,7 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 flask>=3.0
 gunicorn>=21.0
+torch
 openai-whisper>=20231117
 pillow>=10.0
 werkzeug>=3.0
