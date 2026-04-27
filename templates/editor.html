@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit: {{ clip.original_filename }} — Degas Clips</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left">
+    <a href="/projects" class="nav-back">← Projects</a>
+    <span class="nav-sep">/</span>
+    <a href="/projects/{{ project.id }}" class="nav-back">{{ project.name }}</a>
+    <span class="nav-sep">/</span>
+    <span class="nav-brand">Edit Transcript</span>
+  </div>
+  <div class="nav-right">
+    <span id="save-status" class="save-status"></span>
+    <button class="btn btn-primary" onclick="saveTranscript()">Save</button>
+    <a href="/logout" class="nav-link">Log out</a>
+  </div>
+</nav>
+
+<div class="editor-layout">
+
+  <!-- Video panel -->
+  <div class="video-panel">
+    <video
+      id="video-player"
+      src="/projects/{{ project.id }}/clips/{{ clip.id }}/video"
+      controls
+      playsinline
+    ></video>
+    <div class="clip-filename">{{ clip.original_filename }}</div>
+  </div>
+
+  <!-- Transcript panel -->
+  <div class="transcript-panel">
+    <div class="transcript-header">
+      <h2>Transcript</h2>
+      <p class="transcript-hint">Edit the text in each segment. Do not change timestamps.</p>
+    </div>
+
+    <div id="segments-container">
+      {% for seg in segments %}
+      <div class="segment" data-index="{{ loop.index0 }}">
+        <div class="segment-time"
+             onclick="seekVideo({{ seg.start }})"
+             title="Click to jump to {{ '%.1f'|format(seg.start) }}s">
+          {{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }}
+          →
+          {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}
+        </div>
+        <textarea
+          class="segment-text"
+          data-start="{{ seg.start }}"
+          data-end="{{ seg.end }}"
+          rows="2"
+        >{{ seg.text }}</textarea>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const projectId = {{ project.id }};
+  const clipId    = {{ clip.id }};
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

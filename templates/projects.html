@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Degas Clips — Projects</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-brand"><span class="logo-d">D</span>EGAS Clips</div>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+
+<main class="container">
+
+  <div class="page-header">
+    <h1>Projects</h1>
+    <button class="btn btn-primary" onclick="openModal('new-project-modal')">
+      + New Project
+    </button>
+  </div>
+
+  {% if projects %}
+  <div class="project-grid">
+    {% for p in projects %}
+    <a href="/projects/{{ p.id }}" class="project-card">
+      <div class="project-card-header">
+        <h2>{{ p.name }}</h2>
+        <span class="clip-count">{{ p.clip_count }} clip{{ 's' if p.clip_count != 1 }}</span>
+      </div>
+      <div class="project-card-meta">
+        {% if p.assigned_to %}
+          <span class="meta-item">👤 {{ p.assigned_to }}</span>
+        {% endif %}
+        <span class="meta-item">{{ p.created_at[:10] }}</span>
+      </div>
+      <div class="project-progress">
+        <div class="progress-label">
+          {{ p.exported_count }} / {{ p.clip_count }} exported
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: {{ ((p.exported_count / p.clip_count) * 100) | int if p.clip_count > 0 else 0 }}%"></div>
+        </div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>No projects yet. Create one to get started.</p>
+  </div>
+  {% endif %}
+
+</main>
+
+<!-- New Project Modal -->
+<div id="new-project-modal" class="modal-overlay" onclick="closeModal('new-project-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>New Project</h2>
+    <form method="POST" action="/projects/new">
+      <div class="form-group">
+        <label>Project Name</label>
+        <input type="text" name="name" placeholder="e.g. March Campaign" required autofocus>
+      </div>
+      <div class="form-group">
+        <label>Assigned To</label>
+        <input type="text" name="assigned_to" placeholder="Team member name (optional)">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('new-project-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Project</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

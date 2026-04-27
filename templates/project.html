@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ project.name }} — Degas Clips</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<nav class="navbar">
+  <div class="nav-left">
+    <a href="/projects" class="nav-back">← Projects</a>
+    <span class="nav-sep">/</span>
+    <span class="nav-brand">{{ project.name }}</span>
+  </div>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+
+<main class="container">
+
+  <div class="page-header">
+    <div>
+      <h1>{{ project.name }}</h1>
+      <div class="project-meta-row">
+        {% if project.assigned_to %}
+          <span class="meta-pill">👤 {{ project.assigned_to }}</span>
+        {% endif %}
+        <span class="meta-pill">{{ project.created_at[:10] }}</span>
+        <span class="meta-pill">{{ clips|length }} clip{{ 's' if clips|length != 1 }}</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-ghost" onclick="openModal('upload-modal')">Upload Clips</button>
+      {% if clips %}
+        <button class="btn btn-ghost" onclick="transcribeAll({{ project.id }})">Transcribe All</button>
+        <button class="btn btn-primary" onclick="openModal('export-all-modal')">Export All</button>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if clips %}
+  <div class="clip-table-wrap">
+    <table class="clip-table">
+      <thead>
+        <tr>
+          <th>Clip</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for clip in clips %}
+        <tr id="clip-row-{{ clip.id }}" data-clip-id="{{ clip.id }}" data-project-id="{{ project.id }}">
+          <td class="clip-name">{{ clip.original_filename }}</td>
+          <td>
+            <span id="status-badge-{{ clip.id }}" class="badge badge-{{ clip.status }}">
+              {{ clip.status }}
+            </span>
+            {% if clip.error_message %}
+              <span class="error-tip" title="{{ clip.error_message }}">⚠</span>
+            {% endif %}
+          </td>
+          <td class="clip-actions">
+
+            {% if clip.status == 'uploaded' %}
+              <button class="btn btn-sm btn-ghost"
+                onclick="transcribeClip({{ project.id }}, {{ clip.id }})">
+                Transcribe
+              </button>
+
+            {% elif clip.status == 'transcribing' %}
+              <span class="spinner-text">Transcribing…</span>
+
+            {% elif clip.status in ('transcribed', 'exported') %}
+              <a href="/projects/{{ project.id }}/clips/{{ clip.id }}/editor"
+                 class="btn btn-sm btn-ghost">Edit Transcript</a>
+              <button class="btn btn-sm btn-ghost"
+                onclick="openExportModal({{ project.id }}, {{ clip.id }}, '{{ clip.original_filename }}')">
+                Export
+              </button>
+              {% if clip.status == 'exported' %}
+                <a href="/projects/{{ project.id }}/clips/{{ clip.id }}/download"
+                   class="btn btn-sm btn-primary">Download</a>
+              {% endif %}
+
+            {% elif clip.status == 'exporting' %}
+              <span class="spinner-text">Exporting…</span>
+
+            {% elif clip.status == 'error' %}
+              <button class="btn btn-sm btn-ghost"
+                onclick="transcribeClip({{ project.id }}, {{ clip.id }})">
+                Retry
+              </button>
+            {% endif %}
+
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <p>No clips yet. Upload some to get started.</p>
+    <button class="btn btn-primary" onclick="openModal('upload-modal')">Upload Clips</button>
+  </div>
+  {% endif %}
+
+</main>
+
+<!-- Upload Modal -->
+<div id="upload-modal" class="modal-overlay" onclick="closeModal('upload-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Upload Clips</h2>
+    <form method="POST"
+          action="/projects/{{ project.id }}/upload"
+          enctype="multipart/form-data"
+          id="upload-form">
+      <div class="dropzone" id="dropzone">
+        <p>Drop video files here or click to browse</p>
+        <p class="dropzone-sub">MP4, MOV, AVI, MKV, M4V</p>
+        <input type="file" name="clips" id="file-input"
+               multiple accept="video/*" style="display:none">
+      </div>
+      <div id="file-list" class="file-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('upload-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="upload-btn" disabled>
+          Upload
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Export Single Modal -->
+<div id="export-modal" class="modal-overlay" onclick="closeModal('export-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Export: <span id="export-clip-name"></span></h2>
+    <form id="export-form">
+      <input type="hidden" id="export-clip-id">
+      <div class="form-group">
+        <label>Caption Style</label>
+        <div class="style-options">
+          {% for key, style in styles.items() %}
+          <label class="style-option">
+            <input type="radio" name="style" value="{{ key }}"
+                   {% if loop.first %}checked{% endif %}>
+            <span class="style-label">{{ style.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('export-modal')">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="submitExport({{ project.id }})">
+          Export
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Export All Modal -->
+<div id="export-all-modal" class="modal-overlay" onclick="closeModal('export-all-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>Export All Clips</h2>
+    <form method="POST" action="/projects/{{ project.id }}/export-all">
+      <div class="form-group">
+        <label>Caption Style</label>
+        <div class="style-options">
+          {% for key, style in styles.items() %}
+          <label class="style-option">
+            <input type="radio" name="style" value="{{ key }}"
+                   {% if loop.first %}checked{% endif %}>
+            <span class="style-label">{{ style.name }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <p class="modal-note">Only transcribed clips will be exported.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('export-all-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Export All</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
