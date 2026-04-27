@@ -12,40 +12,112 @@ document.addEventListener('keydown', e => {
   }
 });
 
-/* ── Dropzone ────────────────────────────────────────────────────────────────── */
+/* ── Dropzone & Upload Queue ─────────────────────────────────────────────────── */
+const CHUNK_SIZE = 50 * 1024 * 1024; // 50 MB
+
 const dropzone  = document.getElementById('dropzone');
 const fileInput = document.getElementById('file-input');
 const fileList  = document.getElementById('file-list');
 const uploadBtn = document.getElementById('upload-btn');
 
+let queuedFiles = [];
+
 if (dropzone) {
   dropzone.addEventListener('click', () => fileInput.click());
-
-  dropzone.addEventListener('dragover', e => {
-    e.preventDefault();
-    dropzone.classList.add('over');
-  });
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('over'); });
   dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
   dropzone.addEventListener('drop', e => {
     e.preventDefault();
     dropzone.classList.remove('over');
-    fileInput.files = e.dataTransfer.files;
-    renderFileList(e.dataTransfer.files);
+    setFiles(e.dataTransfer.files);
   });
+  fileInput.addEventListener('change', () => setFiles(fileInput.files));
+}
 
-  fileInput.addEventListener('change', () => renderFileList(fileInput.files));
+function setFiles(files) {
+  queuedFiles = Array.from(files);
+  renderFileList(queuedFiles);
 }
 
 function renderFileList(files) {
   if (!fileList) return;
   fileList.innerHTML = '';
-  for (const f of files) {
+  files.forEach((f, i) => {
     const item = document.createElement('div');
     item.className = 'file-item';
-    item.innerHTML = `<span>${f.name}</span><span>${(f.size / 1024 / 1024).toFixed(1)} MB</span>`;
+    item.id = `file-item-${i}`;
+    item.innerHTML = `
+      <span class="file-item-name">${f.name}</span>
+      <span class="file-item-size">${(f.size / 1024 / 1024).toFixed(1)} MB</span>
+      <span class="file-item-status" id="file-status-${i}">Queued</span>
+    `;
     fileList.appendChild(item);
-  }
+  });
   if (uploadBtn) uploadBtn.disabled = files.length === 0;
+}
+
+// Called by the Upload button in the modal
+async function startUploadQueue(projectId) {
+  if (!queuedFiles.length) return;
+
+  uploadBtn.disabled = true;
+  uploadBtn.textContent = 'Uploading…';
+
+  const overall = document.getElementById('upload-overall');
+  if (overall) overall.style.display = 'block';
+
+  for (let i = 0; i < queuedFiles.length; i++) {
+    const file = queuedFiles[i];
+    const statusEl = document.getElementById(`file-status-${i}`);
+    const overallEl = document.getElementById('upload-overall-text');
+
+    if (overallEl) overallEl.textContent = `Uploading ${i + 1} of ${queuedFiles.length}: ${file.name}`;
+    if (statusEl) statusEl.textContent = 'Uploading…';
+
+    try {
+      await uploadFileInChunks(file, projectId, (pct) => {
+        if (statusEl) statusEl.textContent = `${pct}%`;
+      });
+      if (statusEl) statusEl.textContent = '✓ Done';
+    } catch (err) {
+      if (statusEl) statusEl.textContent = '✗ Failed';
+      console.error('Upload failed for', file.name, err);
+    }
+  }
+
+  if (overallEl) overallEl.textContent = 'All files uploaded! Reloading…';
+  setTimeout(() => {
+    closeModal('upload-modal');
+    location.reload();
+  }, 1200);
+}
+
+async function uploadFileInChunks(file, projectId, onProgress) {
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const fileUid = crypto.randomUUID();
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CHUNK_SIZE;
+    const end   = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+
+    const form = new FormData();
+    form.append('file_uid',     fileUid);
+    form.append('chunk_index',  i);
+    form.append('total_chunks', totalChunks);
+    form.append('filename',     file.name);
+    form.append('data',         chunk);
+
+    const res = await fetch(`/projects/${projectId}/upload/chunk`, {
+      method: 'POST',
+      body: form,
+    });
+
+    if (!res.ok) throw new Error(`Chunk ${i} failed: ${res.status}`);
+
+    const pct = Math.round(((i + 1) / totalChunks) * 100);
+    onProgress(pct);
+  }
 }
 
 /* ── Transcription ───────────────────────────────────────────────────────────── */

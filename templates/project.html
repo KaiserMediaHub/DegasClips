@@ -113,24 +113,22 @@
 <div id="upload-modal" class="modal-overlay" onclick="closeModal('upload-modal')">
   <div class="modal" onclick="event.stopPropagation()">
     <h2>Upload Clips</h2>
-    <form method="POST"
-          action="/projects/{{ project.id }}/upload"
-          enctype="multipart/form-data"
-          id="upload-form">
-      <div class="dropzone" id="dropzone">
-        <p>Drop video files here or click to browse</p>
-        <p class="dropzone-sub">MP4, MOV, AVI, MKV, M4V</p>
-        <input type="file" name="clips" id="file-input"
-               multiple accept="video/*" style="display:none">
-      </div>
-      <div id="file-list" class="file-list"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn btn-ghost" onclick="closeModal('upload-modal')">Cancel</button>
-        <button type="submit" class="btn btn-primary" id="upload-btn" disabled>
-          Upload
-        </button>
-      </div>
-    </form>
+    <div class="dropzone" id="dropzone">
+      <p>Drop video files here or click to browse</p>
+      <p class="dropzone-sub">MP4, MOV, AVI, MKV, M4V — any size</p>
+      <input type="file" id="file-input" multiple accept="video/*" style="display:none">
+    </div>
+    <div id="file-list" class="file-list"></div>
+    <div id="upload-overall" style="display:none; margin: 10px 0;">
+      <p id="upload-overall-text" class="upload-overall-text"></p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" onclick="closeModal('upload-modal')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="upload-btn" disabled
+              onclick="startUploadQueue({{ project.id }})">
+        Upload
+      </button>
+    </div>
   </div>
 </div>
 

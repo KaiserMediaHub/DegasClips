@@ -139,31 +139,73 @@ def project(project_id):
     )
 
 
-# ── Upload ────────────────────────────────────────────────────────────────────
-@app.route("/projects/<int:project_id>/upload", methods=["POST"])
-def upload_clips(project_id):
-    files = request.files.getlist("clips")
-    db    = get_db()
+# ── Upload (chunked) ──────────────────────────────────────────────────────────
+CHUNK_SIZE = 50 * 1024 * 1024  # 50 MB per chunk
 
-    clip_dir = os.path.join(UPLOAD_FOLDER, str(project_id))
-    os.makedirs(clip_dir, exist_ok=True)
+@app.route("/projects/<int:project_id>/upload/chunk", methods=["POST"])
+def upload_chunk(project_id):
+    """
+    Receives one chunk at a time.
+    Form fields:
+      file_uid      — client-generated UUID for this file
+      chunk_index   — 0-based integer
+      total_chunks  — total number of chunks for this file
+      filename      — original filename
+      data          — the chunk bytes (file field)
+    """
+    file_uid     = request.form.get("file_uid")
+    chunk_index  = int(request.form.get("chunk_index", 0))
+    total_chunks = int(request.form.get("total_chunks", 1))
+    original     = request.form.get("filename", "video.mp4")
+    chunk_data   = request.files.get("data")
 
-    for f in files:
-        if f and f.filename and allowed(f.filename):
-            original  = f.filename
-            safe_name = secure_filename(original)
-            uid       = uuid.uuid4().hex[:8]
-            save_name = f"{uid}_{safe_name}"
-            f.save(os.path.join(clip_dir, save_name))
-            db.execute(
-                """INSERT INTO clips
-                   (project_id, filename, original_filename, status)
-                   VALUES (?, ?, ?, 'uploaded')""",
-                (project_id, save_name, original)
-            )
+    if not file_uid or not chunk_data:
+        return jsonify({"error": "missing fields"}), 400
+
+    if not allowed(original):
+        return jsonify({"error": "file type not allowed"}), 400
+
+    # Save chunk to temp dir
+    clip_dir  = os.path.join(UPLOAD_FOLDER, str(project_id))
+    temp_dir  = os.path.join(clip_dir, "chunks", file_uid)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    chunk_path = os.path.join(temp_dir, f"{chunk_index:05d}")
+    chunk_data.save(chunk_path)
+
+    # Check if all chunks have arrived
+    saved_chunks = len(os.listdir(temp_dir))
+    if saved_chunks < total_chunks:
+        return jsonify({"status": "chunk_received", "chunks": saved_chunks, "total": total_chunks})
+
+    # All chunks received — reassemble
+    safe_name = secure_filename(original)
+    uid       = uuid.uuid4().hex[:8]
+    save_name = f"{uid}_{safe_name}"
+    final_path = os.path.join(clip_dir, save_name)
+
+    with open(final_path, "wb") as out:
+        for i in range(total_chunks):
+            part = os.path.join(temp_dir, f"{i:05d}")
+            with open(part, "rb") as pf:
+                out.write(pf.read())
+
+    # Clean up temp chunks
+    import shutil
+    shutil.rmtree(temp_dir)
+
+    # Register in DB
+    db = get_db()
+    db.execute(
+        """INSERT INTO clips
+           (project_id, filename, original_filename, status)
+           VALUES (?, ?, ?, 'uploaded')""",
+        (project_id, save_name, original)
+    )
     db.commit()
     db.close()
-    return redirect(url_for("project", project_id=project_id))
+
+    return jsonify({"status": "complete", "filename": original})
 
 
 # ── Transcription ─────────────────────────────────────────────────────────────

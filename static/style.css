@@ -320,16 +320,21 @@ input:focus, textarea:focus {
 .dropzone:hover, .dropzone.over { border-color: var(--accent); }
 .dropzone p { color: var(--text-muted); font-size: 14px; }
 .dropzone-sub { font-size: 12px; margin-top: 4px; }
-.file-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.file-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; max-height: 280px; overflow-y: auto; }
 .file-item {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
   align-items: center;
   background: var(--surface-2);
   border-radius: var(--radius);
   padding: 6px 12px;
   font-size: 13px;
 }
+.file-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item-size { color: var(--text-muted); white-space: nowrap; }
+.file-item-status { color: var(--accent); white-space: nowrap; font-size: 12px; }
+.upload-overall-text { font-size: 13px; color: var(--text-muted); }
 
 /* ── Style options ───────────────────────────────────────────────────────────── */
 .style-options { display: flex; flex-direction: column; gap: 8px; }
