@@ -35,7 +35,7 @@
           {% if p.assigned_to %}
             <span class="meta-item">👤 {{ p.assigned_to }}</span>
           {% endif %}
-          <span class="meta-item">{{ p.created_at[:10] }}</span>
+          <span class="meta-item">{{ p.created_at | datestr }}</span>
         </div>
         <div class="project-progress">
           <div class="progress-label">

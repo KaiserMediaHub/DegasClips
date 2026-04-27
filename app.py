@@ -27,6 +27,13 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
 
+@app.template_filter("datestr")
+def datestr_filter(v):
+    if hasattr(v, "strftime"):
+        return v.strftime("%Y-%m-%d")
+    return str(v)[:10]
+
+
 def allowed(filename):
     return os.path.splitext(filename.lower())[1] in ALLOWED_EXTENSIONS
 
@@ -74,12 +81,12 @@ def projects():
     project_list = []
     for p in rows:
         total    = db.execute(
-            "SELECT COUNT(*) FROM clips WHERE project_id = ?", (p["id"],)
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS count FROM clips WHERE project_id = ?", (p["id"],)
+        ).fetchone()["count"]
         exported = db.execute(
-            "SELECT COUNT(*) FROM clips WHERE project_id = ? AND status = 'exported'",
+            "SELECT COUNT(*) AS count FROM clips WHERE project_id = ? AND status = 'exported'",
             (p["id"],)
-        ).fetchone()[0]
+        ).fetchone()["count"]
         project_list.append({
             "id":           p["id"],
             "name":         p["name"],
