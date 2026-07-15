@@ -18,9 +18,14 @@ def init_db():
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT NOT NULL,
             assigned_to TEXT DEFAULT '',
+            client_id   INTEGER,
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN client_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS clips (
             id                INTEGER PRIMARY KEY AUTOINCREMENT,
