@@ -8,13 +8,14 @@ def get_model():
     global _model
     if _model is None:
         import whisper
-        _model = whisper.load_model("base")
+        _model = whisper.load_model("small")
     return _model
 
 
 def transcribe(video_path, words_path, segments_path):
     """
-    Transcribe a video file using Whisper base.
+    Transcribe a video file using Whisper small (bumped up from base for
+    better accuracy on names/jargon).
     Saves word-level timestamps to words_path (.words.json)
     and segment-level data to segments_path (.segments.json).
     """
