@@ -32,21 +32,27 @@ def update_words_from_segments(edited_segments, words_path):
             if w["start"] >= seg_start - 0.05 and w["end"] <= seg_end + 0.05
         ]
 
+        # KMG Studio task #8: once a human has reviewed and saved a segment,
+        # its words are no longer "Whisper's guess" -- confidence is cleared
+        # (None) so the flagging system doesn't keep re-flagging text a
+        # person already confirmed, matching or not.
         if len(orig_seg_words) == len(new_text_words):
             for orig, new_word in zip(orig_seg_words, new_text_words):
                 new_words.append({
-                    "word":  new_word,
-                    "start": orig["start"],
-                    "end":   orig["end"],
+                    "word":       new_word,
+                    "start":      orig["start"],
+                    "end":        orig["end"],
+                    "confidence": None,
                 })
         else:
             duration      = seg_end - seg_start
             word_duration = duration / len(new_text_words)
             for j, new_word in enumerate(new_text_words):
                 new_words.append({
-                    "word":  new_word,
-                    "start": seg_start + j * word_duration,
-                    "end":   seg_start + (j + 1) * word_duration,
+                    "word":       new_word,
+                    "start":      seg_start + j * word_duration,
+                    "end":        seg_start + (j + 1) * word_duration,
+                    "confidence": None,
                 })
 
     with open(words_path, "w", encoding="utf-8") as f:
