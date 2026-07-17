@@ -41,18 +41,30 @@
     <div class="transcript-header">
       <h2>Transcript</h2>
       <p class="transcript-hint">Edit the text in each segment. Do not change timestamps.</p>
+      <div class="flag-toolbar">
+        <span id="flag-count-label"></span>
+        <button id="flag-toggle-btn" class="btn btn-sm btn-ghost" onclick="toggleFlaggedOnly()">Show all segments</button>
+      </div>
     </div>
 
     <div id="segments-container">
       {% for seg in segments %}
-      <div class="segment" data-index="{{ loop.index0 }}">
+      <div class="segment{% if seg.flagged %} segment-flagged{% endif %}"
+           data-index="{{ loop.index0 }}"
+           data-flagged="{{ 'true' if seg.flagged else 'false' }}">
         <div class="segment-time"
              onclick="seekVideo({{ seg.start }})"
              title="Click to jump to {{ '%.1f'|format(seg.start) }}s">
           {{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }}
           →
           {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}
+          {% if seg.flagged %}<span class="flag-badge" title="Contains a word Whisper wasn't confident about">⚠ needs review</span>{% endif %}
         </div>
+        {% if seg.flagged %}
+        <div class="segment-preview">
+          {% for w in seg.words %}<span class="{% if w.flagged %}word-flagged{% endif %}" title="{% if w.flagged %}confidence: {{ '%.0f'|format(w.confidence * 100) }}%{% endif %}">{{ w.word }}</span> {% endfor %}
+        </div>
+        {% endif %}
         <textarea
           class="segment-text"
           data-start="{{ seg.start }}"
