@@ -195,7 +195,16 @@ function startPolling(projectId, clipId) {
     fetch(`/projects/${projectId}/clips/${clipId}/status`)
       .then(r => r.json())
       .then(data => {
-        updateBadge(clipId, data.status);
+        if (data.status === 'transcribing') {
+          const elapsed = data.elapsed || 0;
+          const mins = Math.floor(elapsed / 60);
+          const secs = elapsed % 60;
+          const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+          const badge = document.getElementById(`status-badge-${clipId}`);
+          if (badge) { badge.className = 'badge badge-transcribing'; badge.textContent = `transcribing ${timeStr}`; }
+        } else {
+          updateBadge(clipId, data.status);
+        }
         const done = ['transcribed', 'exported', 'error'].includes(data.status);
         if (done) {
           clearInterval(activePolls[clipId]);
@@ -300,3 +309,41 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+
+
+function applyFlagFilter() {
+  var segments = document.querySelectorAll('.segment');
+  var btn = document.getElementById('flag-toggle-btn');
+  var label = document.getElementById('flag-count-label');
+  if (!segments.length) return;
+
+  var flaggedCount = document.querySelectorAll('.segment[data-flagged="true"]').length;
+
+  segments.forEach(function(seg) {
+    if (!showAllSegments && seg.dataset.flagged === 'false') {
+      seg.classList.add('flag-hidden');
+    } else {
+      seg.classList.remove('flag-hidden');
+    }
+  });
+
+  if (label) {
+    label.textContent = flaggedCount === 0
+      ? 'No segments need review'
+      : flaggedCount + ' of ' + segments.length + ' segment' + (segments.length === 1 ? '' : 's') + ' need review';
+  }
+  if (btn) {
+    btn.textContent = showAllSegments ? 'Show flagged only' : 'Show all segments';
+  }
+}
+
+var showAllSegments = false;
+
+function toggleFlaggedOnly() {
+  showAllSegments = !showAllSegments;
+  applyFlagFilter();
+}
+
+if (document.getElementById('segments-container')) {
+  applyFlagFilter();
+}

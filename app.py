@@ -1,6 +1,7 @@
 import os
 import json
 import threading
+import time
 import uuid
 
 from flask import (
@@ -12,6 +13,7 @@ from werkzeug.utils import secure_filename
 from database import init_db, get_db
 import transcription
 import captions
+import flagging
 from sync_logic import update_words_from_segments
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -23,6 +25,10 @@ OUTPUT_FOLDER     = os.environ.get("OUTPUT_FOLDER", "outputs")
 MAX_CONTENT_MB    = int(os.environ.get("MAX_CONTENT_MB", "2048"))
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_MB * 1024 * 1024
+
+_transcribe_start_times = {}
+_transcribe_semaphore = __import__("threading").Semaphore(1)
+TRANSCRIBE_TIMEOUT = 600
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
@@ -101,14 +107,19 @@ def projects():
 def new_project():
     name        = request.form.get("name", "").strip()
     assigned_to = request.form.get("assigned_to", "").strip()
+    client_id   = request.form.get("client_id", "").strip()
+    client_id   = int(client_id) if client_id.isdigit() else None
     if name:
         db = get_db()
         db.execute(
-            "INSERT INTO projects (name, assigned_to) VALUES (?, ?)",
-            (name, assigned_to)
+            "INSERT INTO projects (name, assigned_to, client_id) VALUES (?, ?, ?)",
+            (name, assigned_to, client_id)
         )
         db.commit()
+        proj_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         db.close()
+        if request.headers.get("Accept") == "application/json":
+            return jsonify({"id": proj_id, "name": name, "client_id": client_id})
     return redirect(url_for("projects"))
 
 
@@ -116,12 +127,19 @@ def new_project():
 def edit_project(project_id):
     name        = request.form.get("name", "").strip()
     assigned_to = request.form.get("assigned_to", "").strip()
+    client_id   = request.form.get("client_id", "").strip()
     if name:
         db = get_db()
-        db.execute(
-            "UPDATE projects SET name = ?, assigned_to = ? WHERE id = ?",
-            (name, assigned_to, project_id)
-        )
+        if client_id.isdigit():
+            db.execute(
+                "UPDATE projects SET name = ?, assigned_to = ?, client_id = ? WHERE id = ?",
+                (name, assigned_to, int(client_id), project_id)
+            )
+        else:
+            db.execute(
+                "UPDATE projects SET name = ?, assigned_to = ? WHERE id = ?",
+                (name, assigned_to, project_id)
+            )
         db.commit()
         db.close()
     return redirect(request.referrer or url_for("projects"))
@@ -151,6 +169,24 @@ def project(project_id):
         (project_id,)
     ).fetchall()
     db.close()
+    if request.headers.get("Accept") == "application/json":
+        return jsonify({
+            "id": proj["id"],
+            "name": proj["name"],
+            "assigned_to": proj["assigned_to"],
+            "client_id": proj["client_id"] if "client_id" in proj.keys() else None,
+            "clips": [
+                {
+                    "id": c["id"],
+                    "filename": c["filename"],
+                    "original_filename": c["original_filename"],
+                    "status": c["status"],
+                    "error_message": c["error_message"],
+                    "style": c["style"],
+                }
+                for c in clips
+            ],
+        })
     return render_template(
         "project.html",
         project=proj,
@@ -229,10 +265,12 @@ def upload_chunk(project_id):
 
 
 # ── Transcription ─────────────────────────────────────────────────────────────
-def _run_transcribe(project_id, clip_id, video_path, words_path, segments_path):
+def _run_transcribe(project_id, clip_id, video_path, words_path, segments_path, original_path):
+    _transcribe_semaphore.acquire()
+    _transcribe_start_times[clip_id] = time.time()
     db = get_db()
     try:
-        transcription.transcribe(video_path, words_path, segments_path)
+        transcription.transcribe(video_path, words_path, segments_path, original_path)
         db.execute(
             "UPDATE clips SET status = 'transcribed' WHERE id = ?", (clip_id,)
         )
@@ -244,6 +282,7 @@ def _run_transcribe(project_id, clip_id, video_path, words_path, segments_path):
     finally:
         db.commit()
         db.close()
+        _transcribe_semaphore.release()
 
 
 @app.route("/projects/<int:project_id>/clips/<int:clip_id>/transcribe", methods=["POST"])
@@ -259,15 +298,17 @@ def transcribe_clip(project_id, clip_id):
     db.execute("UPDATE clips SET status = 'transcribing' WHERE id = ?", (clip_id,))
     db.commit()
     db.close()
+    _transcribe_start_times[clip_id] = time.time()
 
     clip_dir      = os.path.join(UPLOAD_FOLDER, str(project_id))
     video_path    = os.path.join(clip_dir, clip["filename"])
     words_path    = os.path.join(clip_dir, f"{clip_id}.words.json")
     segments_path = os.path.join(clip_dir, f"{clip_id}.segments.json")
+    original_path = os.path.join(clip_dir, f"{clip_id}.original.json")
 
     threading.Thread(
         target=_run_transcribe,
-        args=(project_id, clip_id, video_path, words_path, segments_path),
+        args=(project_id, clip_id, video_path, words_path, segments_path, original_path),
         daemon=True,
     ).start()
 
@@ -278,7 +319,7 @@ def transcribe_clip(project_id, clip_id):
 def transcribe_all(project_id):
     db    = get_db()
     clips = db.execute(
-        "SELECT * FROM clips WHERE project_id = ? AND status = 'uploaded'",
+        "SELECT * FROM clips WHERE project_id = ? AND status IN ('uploaded', 'error')",
         (project_id,)
     ).fetchall()
 
@@ -295,7 +336,8 @@ def transcribe_all(project_id):
             video_path    = os.path.join(clip_dir, clip["filename"])
             words_path    = os.path.join(clip_dir, f"{clip['id']}.words.json")
             segments_path = os.path.join(clip_dir, f"{clip['id']}.segments.json")
-            _run_transcribe(project_id, clip["id"], video_path, words_path, segments_path)
+            original_path = os.path.join(clip_dir, f"{clip['id']}.original.json")
+            _run_transcribe(project_id, clip["id"], video_path, words_path, segments_path, original_path)
 
     threading.Thread(target=run_all, daemon=True).start()
     return redirect(url_for("project", project_id=project_id))
@@ -312,7 +354,39 @@ def clip_status(project_id, clip_id):
     db.close()
     if not clip:
         return jsonify({"error": "not found"}), 404
+    if clip["status"] == "transcribing":
+        start = _transcribe_start_times.get(clip_id)
+        if start and (time.time() - start) > TRANSCRIBE_TIMEOUT:
+            db2 = get_db()
+            db2.execute("UPDATE clips SET status='error', error_message='Timed out' WHERE id=?", (clip_id,))
+            db2.commit()
+            db2.close()
+            return jsonify({"status": "error", "error": "Timed out"})
+        elapsed = int(time.time() - start) if start else 0
+        return jsonify({"status": "transcribing", "error": None, "elapsed": elapsed})
     return jsonify({"status": clip["status"], "error": clip["error_message"]})
+
+
+@app.route("/projects/<int:project_id>/clips/<int:clip_id>/segments")
+def clip_segments(project_id, clip_id):
+    """KMG Studio task #8: exposes both the original (immutable, as
+    transcribed) and current (possibly human-edited) segments for a clip,
+    so Studio can diff them to detect glossary candidates."""
+    clip_dir = os.path.join(UPLOAD_FOLDER, str(project_id))
+    original_path = os.path.join(clip_dir, f"{clip_id}.original.json")
+    segments_path = os.path.join(clip_dir, f"{clip_id}.segments.json")
+
+    original = []
+    if os.path.exists(original_path):
+        with open(original_path, "r", encoding="utf-8") as f:
+            original = json.load(f)
+
+    current = []
+    if os.path.exists(segments_path):
+        with open(segments_path, "r", encoding="utf-8") as f:
+            current = json.load(f)
+
+    return jsonify({"original": original, "current": current})
 
 
 # ── Transcript editor ─────────────────────────────────────────────────────────
@@ -329,10 +403,16 @@ def editor(project_id, clip_id):
         return redirect(url_for("project", project_id=project_id))
 
     segments_path = os.path.join(UPLOAD_FOLDER, str(project_id), f"{clip_id}.segments.json")
+    words_path = os.path.join(UPLOAD_FOLDER, str(project_id), f"{clip_id}.words.json")
     segments = []
     if os.path.exists(segments_path):
         with open(segments_path, "r", encoding="utf-8") as f:
             segments = json.load(f)
+    words = []
+    if os.path.exists(words_path):
+        with open(words_path, "r", encoding="utf-8") as f:
+            words = json.load(f)
+    segments = flagging.annotate_segments_with_flags(segments, words)
 
     return render_template(
         "editor.html",
@@ -489,6 +569,53 @@ def download_clip(project_id, clip_id):
     )
 
 
+
+# -- Bulk transcript editor ---------------------------------------------------
+@app.route("/projects/<int:project_id>/editor-all")
+def editor_all(project_id):
+    db   = get_db()
+    proj = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not proj:
+        db.close()
+        return redirect(url_for("projects"))
+    clips = db.execute(
+        "SELECT * FROM clips WHERE project_id = ? AND status IN ('transcribed', 'exported') ORDER BY created_at",
+        (project_id,)
+    ).fetchall()
+    db.close()
+    clips_data = []
+    for clip in clips:
+        import os, json
+        segments_path = os.path.join(UPLOAD_FOLDER, str(project_id), f"{clip['id']}.segments.json")
+        segments = []
+        if os.path.exists(segments_path):
+            with open(segments_path, "r", encoding="utf-8") as f2:
+                segments = json.load(f2)
+        clips_data.append({"clip": clip, "segments": segments})
+    return render_template("editor_all.html", project=proj, clips_data=clips_data)
+
+
+@app.route("/projects/<int:project_id>/save-all", methods=["POST"])
+def save_all_transcripts(project_id):
+    import os, json
+    data = request.get_json()
+    for item in data.get("clips", []):
+        clip_id  = item["clip_id"]
+        segments = item["segments"]
+        clip_dir      = os.path.join(UPLOAD_FOLDER, str(project_id))
+        words_path    = os.path.join(clip_dir, f"{clip_id}.words.json")
+        segments_path = os.path.join(clip_dir, f"{clip_id}.segments.json")
+        if os.path.exists(segments_path):
+            with open(segments_path, "r", encoding="utf-8") as f2:
+                orig_segs = json.load(f2)
+            for i, seg in enumerate(orig_segs):
+                if i < len(segments):
+                    seg["text"] = segments[i]["text"]
+            with open(segments_path, "w", encoding="utf-8") as f2:
+                json.dump(orig_segs, f2, indent=2)
+        update_words_from_segments(segments, words_path)
+    return jsonify({"status": "saved"})
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 # Deferred init — runs on first request so the Railway volume is mounted first
 _initialized = False
@@ -500,8 +627,44 @@ def ensure_initialized():
         init_db()
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        _reset_db = get_db()
+        _reset_db.execute("UPDATE clips SET status='error', error_message='Server restarted during transcription' WHERE status='transcribing'")
+        _reset_db.commit()
+        _reset_db.close()
         _initialized = True
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+# ── KMG Studio: storage cleanup (task #22) ──────────────────────────────────
+@app.route("/projects/<int:project_id>/clips/<int:clip_id>/delete-media", methods=["POST"])
+def delete_clip_media(project_id, clip_id):
+    db = get_db()
+    clip = db.execute(
+        "SELECT * FROM clips WHERE id = ? AND project_id = ?", (clip_id, project_id)
+    ).fetchone()
+    if not clip:
+        db.close()
+        return jsonify({"error": "not found"}), 404
+
+    clip_dir = os.path.join(UPLOAD_FOLDER, str(project_id))
+    paths_to_remove = [
+        os.path.join(clip_dir, clip["filename"]) if clip["filename"] else None,
+        os.path.join(clip_dir, f"{clip_id}.words.json"),
+        os.path.join(clip_dir, f"{clip_id}.segments.json"),
+        os.path.join(clip_dir, f"{clip_id}.original.json"),
+        os.path.join(OUTPUT_FOLDER, str(project_id), f"{clip_id}_captioned.mp4"),
+    ]
+    for path in paths_to_remove:
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    db.execute("UPDATE clips SET status = 'deleted', error_message = NULL WHERE id = ?", (clip_id,))
+    db.commit()
+    db.close()
+    return jsonify({"status": "deleted"})

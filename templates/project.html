@@ -34,6 +34,7 @@
       <button class="btn btn-ghost" onclick="openModal('upload-modal')">Upload Clips</button>
       {% if clips %}
         <button class="btn btn-ghost" onclick="transcribeAll({{ project.id }})">Transcribe All</button>
+        <a href="/projects/{{ project.id }}/editor-all" class="btn btn-ghost">Edit All Transcripts</a>
         <button class="btn btn-primary" onclick="openModal('export-all-modal')">Export All</button>
       {% endif %}
     </div>

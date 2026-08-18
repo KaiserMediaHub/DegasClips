@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit All Transcripts</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .bulk-editor{max-width:860px;margin:0 auto;padding:32px 24px 80px}
+    .bulk-clip{margin-bottom:48px;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+    .bulk-clip-header{background:var(--surface-2);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
+    .bulk-clip-title{font-weight:600;font-size:14px}
+    .bulk-clip-count{font-size:12px;color:var(--text-muted)}
+    .bulk-segments{flex:1;padding:16px 20px;display:flex;flex-direction:column;gap:10px;min-width:0}
+    .bulk-segment{display:flex;gap:12px;align-items:flex-start}
+    .bulk-segment-time{font-size:11px;color:var(--text-muted);font-family:monospace;white-space:nowrap;padding-top:8px;min-width:110px}
+    .bulk-segment textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;line-height:1.5;padding:8px 12px;resize:vertical;font-family:inherit}
+    .bulk-segment textarea:focus{outline:none;border-color:var(--accent)}
+    .clip-body{display:flex;gap:0;align-items:flex-start}
+    .clip-video-side{width:360px;min-width:360px;padding:16px;position:sticky;top:60px}
+    .clip-video-wrap{display:none;background:var(--bg);padding:12px 20px;border-bottom:1px solid var(--border)}
+    .clip-video-wrap.open{display:block}
+    .clip-video-wrap video{width:100%;max-height:280px;border-radius:var(--radius);background:#000}
+    .preview-btn{font-size:12px;padding:4px 10px;cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-muted)}
+    .preview-btn:hover{color:var(--text)}
+    .save-bar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;z-index:100}
+    #bulk-save-status{font-size:13px;color:var(--text-muted)}
+  </style>
+</head>
+<body>
+<nav class="navbar">
+  <div class="nav-left">
+    <a href="/projects" class="nav-back">← Projects</a>
+    <span class="nav-sep">/</span>
+    <a href="/projects/{{ project.id }}" class="nav-back">{{ project.name }}</a>
+    <span class="nav-sep">/</span>
+    <span class="nav-brand">Edit All Transcripts</span>
+  </div>
+  <a href="/logout" class="nav-link">Log out</a>
+</nav>
+<div class="bulk-editor">
+  {% if clips_data %}
+    {% for item in clips_data %}
+    <div class="bulk-clip" data-clip-id="{{ item.clip.id }}">
+      <div class="bulk-clip-header">
+        <span class="bulk-clip-title">{{ item.clip.original_filename }}</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span class="bulk-clip-count">{{ item.segments|length }} segment{{ 's' if item.segments|length != 1 }}</span>
+          <button class="preview-btn" onclick="toggleVideo(this, {{ project.id }}, {{ item.clip.id }})">▶ Preview</button>
+          <button class="preview-btn" id="save-btn-{{ item.clip.id }}" onclick="saveClip({{ project.id }}, {{ item.clip.id }})">Save</button>
+        </div>
+      </div>
+      <div class="clip-body" id="clip-body-{{ item.clip.id }}">
+        <div class="clip-video-side" id="video-wrap-{{ item.clip.id }}" style="display:none">
+          <video id="video-{{ item.clip.id }}" controls playsinline style="width:100%;border-radius:var(--radius);background:#000"></video>
+        </div>
+        <div class="bulk-segments">
+        {% if item.segments %}
+          {% for seg in item.segments %}
+          <div class="bulk-segment">
+            <div class="bulk-segment-time">{{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }} to {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}</div>
+            <textarea class="segment-text" data-start="{{ seg.start }}" data-end="{{ seg.end }}" rows="2">{{ seg.text }}</textarea>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div style="padding:20px;color:var(--text-muted)">No segments found.</div>
+        {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty-state"><p>No transcribed clips yet.</p></div>
+  {% endif %}
+</div>
+<div class="save-bar">
+  <span id="bulk-save-status"></span>
+  <div style="display:flex;gap:12px">
+    <a href="/projects/{{ project.id }}" class="btn btn-ghost">Back to Project</a>
+    <button class="btn btn-primary" onclick="saveAllTranscripts({{ project.id }})">Save All</button>
+  </div>
+</div>
+<script>
+function saveClip(projectId, clipId) {
+  var btn = document.getElementById('save-btn-' + clipId);
+  var orig = btn.textContent;
+  btn.textContent = 'Saving...';
+  var segments = [];
+  var clipEl = document.querySelector('[data-clip-id="' + clipId + '"]');
+  clipEl.querySelectorAll('.segment-text').forEach(function(ta) {
+    segments.push({start: parseFloat(ta.dataset.start), end: parseFloat(ta.dataset.end), text: ta.value.trim()});
+  });
+  fetch('/projects/' + projectId + '/save-all', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({clips: [{clip_id: clipId, segments: segments}]})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function() { btn.textContent = 'Saved!'; setTimeout(function() { btn.textContent = orig; }, 2000); })
+  .catch(function() { btn.textContent = 'Error'; setTimeout(function() { btn.textContent = orig; }, 2000); });
+}
+
+function saveAllTranscripts(projectId) {
+  var statusEl = document.getElementById('bulk-save-status');
+  statusEl.textContent = 'Saving...';
+  var clips = [];
+  document.querySelectorAll('.bulk-clip').forEach(function(clipEl) {
+    var clipId = parseInt(clipEl.dataset.clipId);
+    var segments = [];
+    clipEl.querySelectorAll('.segment-text').forEach(function(ta) {
+      segments.push({start: parseFloat(ta.dataset.start), end: parseFloat(ta.dataset.end), text: ta.value.trim()});
+    });
+    clips.push({clip_id: clipId, segments: segments});
+  });
+  fetch('/projects/' + projectId + '/save-all', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({clips: clips})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function() { statusEl.textContent = 'All saved!'; setTimeout(function() { statusEl.textContent = ''; }, 3000); })
+  .catch(function() { statusEl.textContent = 'Error saving'; });
+}
+function toggleVideo(btn, projectId, clipId) {
+  var wrap = document.getElementById('video-wrap-' + clipId);
+  var video = document.getElementById('video-' + clipId);
+  var isOpen = wrap.style.display === 'block';
+  if (isOpen) {
+    wrap.style.display = 'none';
+    video.pause();
+    btn.textContent = '▶ Preview';
+  } else {
+    if (!video.src) { video.src = '/projects/' + projectId + '/clips/' + clipId + '/video'; }
+    wrap.style.display = 'block';
+    btn.textContent = '✕ Close';
+  }
+}
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveAllTranscripts({{ project.id }}); }
+});
+</script>
+</body>
+</html>
