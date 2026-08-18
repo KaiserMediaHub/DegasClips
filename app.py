@@ -4,6 +4,9 @@ import threading
 import time
 import uuid
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import (
     Flask, render_template, request, redirect,
     url_for, session, jsonify, send_file

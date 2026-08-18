@@ -5,3 +5,4 @@ torch
 openai-whisper>=20231117
 pillow>=10.0
 werkzeug>=3.0
+python-dotenv>=1.0

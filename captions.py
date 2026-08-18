@@ -16,7 +16,7 @@ STYLES = {
         "font_size":     72,
         "font_file":     "Optima-Medium.ttf",
         "base_color":    (255, 255, 255, 255),
-        "highlight":     (255, 190, 0,   255),
+        "highlight":     (255, 140, 0,   255),
         "outline_color": (0,   0,   0,   255),
         "outline":       2,
         "bg_color":      None,
