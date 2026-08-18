@@ -1,4 +1,12 @@
-LOW_CONFIDENCE_THRESHOLD = 0.8
+# Raised from 0.8 to 0.9 on 2026-08-18 after a real miss: a wrong word
+# ("the fit and finishes" transcribed incorrectly) scored confident enough
+# to slip past 0.8 and never got flagged for pass 2's second look or a
+# human's attention in Caption Review. A higher bar means more borderline
+# words get double-checked instead of only the clearly-uncertain ones --
+# trades some extra false-positive flags (a correct word that just happened
+# to score under 0.9) for catching more real mistakes. See
+# transcription.py's accuracy-history comment for the fuller story.
+LOW_CONFIDENCE_THRESHOLD = 0.9
 
 
 def annotate_segments_with_flags(segments, words):

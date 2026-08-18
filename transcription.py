@@ -6,35 +6,42 @@ import tempfile
 from flagging import LOW_CONFIDENCE_THRESHOLD
 
 _model = None
-_model_pass2 = None
 
-PASS1_MODEL = "small"
-PASS2_MODEL = "medium"
-FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
-
-# Pass 2 originally re-transcribed low-confidence segments with a full-
-# precision (FP32) "medium" Whisper model via the openai-whisper package.
-# That OOM-crashed the whole Degas service in production (2026-08-18) --
-# this server has 3.7GB RAM total, and FP32 "medium" needs roughly 4-5GB on
-# CPU (CPU doesn't support the more memory-efficient FP16 path) on top of
-# "small" already being resident.
-#
-# Fix: switched from openai-whisper to faster-whisper (CTranslate2), which
-# supports int8 quantization. An int8 "medium" model needs roughly a
-# quarter of FP32's memory footprint -- small enough to actually fit
-# alongside an int8 "small" model on this box. This is what makes it safe
-# to go back to a genuinely bigger model for pass 2, instead of the
-# same-model-plus-beam-search workaround used as the first fix.
-#
-# Both models also get beam search on pass 2 (bigger model AND a more
-# thorough decode), since that's now cheap.
+# Accuracy history, in order:
+# 1. Pass 1 was "small", pass 2 loaded a full-precision (FP32) "medium"
+#    model via openai-whisper for flagged segments only. OOM-crashed the
+#    whole Degas service in production (2026-08-18) -- 3.7GB RAM total,
+#    FP32 medium needs ~4-5GB.
+# 2. Switched to faster-whisper (CTranslate2) with int8 quantization --
+#    ~1/4 FP32's memory. Pass 1 stayed "small", pass 2 became a genuinely
+#    bigger int8 "medium" model for flagged segments. Verified safe on
+#    this server's actual RAM (peak ~2.8GB with both models loaded).
+# 3. Real-world testing (2026-08-18, same day) surfaced a harder problem:
+#    "small" was sometimes confidently WRONG on segments it never flagged
+#    (a real example: "the fit and finishes" came out wrong but scored high
+#    enough confidence to skip pass 2 entirely). Confidence-based flagging
+#    can only catch "the model wasn't sure" -- it can't catch "the model
+#    was sure but incorrect." Since int8 "medium" was already confirmed to
+#    fit comfortably alone (a single medium model uses meaningfully less
+#    memory than the small+medium combination already tested safe), the
+#    fix is to stop gating accuracy behind a flag that can be fooled:
+#    "medium" is now PASS1_MODEL, used for every clip. Pass 2 no longer
+#    loads a second model at all -- it re-decodes the same medium model
+#    with beam search for whatever medium itself still flags as
+#    low-confidence, same shape as the original small-model-only fix.
+#    LOW_CONFIDENCE_THRESHOLD was also raised (see flagging.py) so more
+#    borderline words get a second, more careful look instead of only the
+#    clearly-uncertain ones.
+PASS1_MODEL = "medium"
 COMPUTE_TYPE = "int8"
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 PASS2_BEAM_SIZE = 5
 PASS2_BEST_OF = 5
 
 
 def get_model():
-    """Lazily loads pass 1's model -- needed for every transcription."""
+    """Lazily loads the model -- used for both pass 1 (every clip) and
+    pass 2 (beam-search re-decode of flagged segments, same model)."""
     global _model
     if _model is None:
         from faster_whisper import WhisperModel
@@ -42,21 +49,9 @@ def get_model():
     return _model
 
 
-def get_pass2_model():
-    """Lazily loads pass 2's larger model -- only paid for on clips that
-    actually have a low-confidence segment worth re-checking. Kept as a
-    separate cached global (not reloaded per segment) so repeat low-
-    confidence segments across a project don't re-pay the load cost."""
-    global _model_pass2
-    if _model_pass2 is None:
-        from faster_whisper import WhisperModel
-        _model_pass2 = WhisperModel(PASS2_MODEL, device="cpu", compute_type=COMPUTE_TYPE)
-    return _model_pass2
-
-
 def _extract_audio_segment(video_path, start, end, pad=0.3):
     """Cuts out [start-pad, end+pad] of video_path into a temp wav file for
-    re-transcription. pad gives the bigger model a little surrounding audio
+    re-transcription. pad gives the re-decode a little surrounding audio
     for context. Returns (temp_path, clip_start) where clip_start is the
     absolute video time the temp clip begins at, needed to remap the
     re-transcribed word timestamps back onto the full video's timeline."""
@@ -100,25 +95,27 @@ def _words_from_segments(segments):
     return all_segments
 
 
-def _rerun_segment_with_bigger_model(video_path, segment, min_time=None, max_time=None):
-    """Pass 2: re-transcribes one low-confidence segment's audio with the
-    larger int8-quantized model, using beam search, and returns fresh word
-    dicts with timestamps remapped back onto the full video's timeline.
+def _rerun_segment_with_careful_decode(video_path, segment, min_time=None, max_time=None):
+    """Pass 2: re-decodes one low-confidence segment's audio with the SAME
+    already-loaded model, using beam search instead of the default decode --
+    a more thorough (and slower) search of possible transcriptions for just
+    this short segment. Returns fresh word dicts with timestamps remapped
+    back onto the full video's timeline.
 
     min_time/max_time define the "safe zone" this segment is allowed to
     claim words from -- the previous segment's end and the next segment's
-    start, NOT this segment's own start/end. This distinction matters: this
-    segment's own boundaries came from pass 1, which was already uncertain
-    about this exact stretch of audio (that's why it got flagged), so its
-    timing can be slightly off too. Trimming to this segment's own
-    boundary was tried first and cut off real trailing words (e.g. "you
-    know" got clipped down to just "you") whenever pass 1's guessed
-    boundary landed a little early. Trimming to the NEIGHBORING segments'
-    boundaries instead only discards a word if it overlaps territory a
-    neighbor already owns -- which is what actually causes duplication --
-    while letting this segment claim as much of the gap between segments
-    as the re-transcription actually found. If a neighbor doesn't exist
-    (first/last segment) or isn't provided, that side is unbounded.
+    start, NOT this segment's own start/end. This segment's own boundaries
+    came from the same pass that was already uncertain about this exact
+    stretch of audio (that's why it got flagged), so its timing can be
+    slightly off too. Trimming to this segment's own boundary was tried
+    first and cut off real trailing words (e.g. "you know" got clipped down
+    to just "you") whenever the declared boundary landed a little early.
+    Trimming to the NEIGHBORING segments' boundaries instead only discards
+    a word if it overlaps territory a neighbor already owns -- which is
+    what actually causes duplication -- while letting this segment claim as
+    much of the gap between segments as the re-decode actually found. If a
+    neighbor doesn't exist (first/last segment) or isn't provided, that
+    side is unbounded.
 
     Returns None (rather than raising) if anything goes wrong -- ffmpeg
     missing, corrupt audio, etc -- so the caller can just fall back to pass
@@ -129,7 +126,7 @@ def _rerun_segment_with_bigger_model(video_path, segment, min_time=None, max_tim
         temp_path, clip_start = _extract_audio_segment(
             video_path, segment["start"], segment["end"]
         )
-        model = get_pass2_model()
+        model = get_model()
         segments, _info = model.transcribe(
             temp_path,
             word_timestamps=True,
@@ -170,18 +167,19 @@ def transcribe(video_path, words_path, segments_path, original_path=None):
     """
     Two-pass transcription:
 
-    Pass 1 -- an int8-quantized "small" model (faster-whisper/CTranslate2)
+    Pass 1 -- an int8-quantized "medium" model (faster-whisper/CTranslate2)
     transcribes the full clip and records a per-word confidence score.
+    "medium" (not "small") is used for every clip, not just ones that turn
+    out to need a re-check -- see the accuracy-history comment above for
+    why gating a better model behind a confidence flag wasn't good enough.
 
     Pass 2 -- any segment that came out of pass 1 with at least one word
     below LOW_CONFIDENCE_THRESHOLD gets that slice of audio cut out and
-    re-transcribed with a larger int8-quantized model ("medium") using beam
-    search, and the improved words are spliced back in. This only
-    re-processes the shaky parts, not the whole clip, so clips with no
-    confidence issues pay no pass-2 cost at all. int8 quantization is what
-    makes it safe to use a genuinely bigger model here without repeating the
-    OOM crash a full-precision "medium" model caused in production on
-    2026-08-18 -- see the COMPUTE_TYPE comment above for the memory math.
+    re-decoded with the SAME model using beam search (slower, more
+    thorough than the default decode), and the improved words are spliced
+    back in. This only re-processes the shaky parts, not the whole clip,
+    so clips with no confidence issues pay no pass-2 cost at all -- and it
+    never loads a second model.
 
     Pass 3 is intentionally not automated here -- it's the manual Caption
     Review step that already exists in the UI (task #8's flagging system).
@@ -200,10 +198,10 @@ def transcribe(video_path, words_path, segments_path, original_path=None):
         if not any(w["confidence"] < LOW_CONFIDENCE_THRESHOLD for w in segment["words"]):
             continue
         # Neighboring segments' boundaries, not this segment's own -- see
-        # _rerun_segment_with_bigger_model's docstring for why.
+        # _rerun_segment_with_careful_decode's docstring for why.
         min_time = all_segments[i - 1]["end"] if i > 0 else None
         max_time = all_segments[i + 1]["start"] if i + 1 < len(all_segments) else None
-        revised_words = _rerun_segment_with_bigger_model(video_path, segment, min_time, max_time)
+        revised_words = _rerun_segment_with_careful_decode(video_path, segment, min_time, max_time)
         if not revised_words:
             continue  # pass 2 failed or found nothing better -- keep pass 1's words, still flagged
         segment["words"] = revised_words
