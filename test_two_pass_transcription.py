@@ -1,13 +1,25 @@
 """
-Tests for the two-pass transcription accuracy improvement added 2026-08-18
-(Ben's ask: "pass one is 90% confident, calls out things it's not confident
-on, pass two re-checks those, pass three is manual check").
+Tests for the two-pass transcription accuracy improvement (Ben's ask:
+"pass one is 90% confident, calls out things it's not confident on, pass two
+re-checks those, pass three is manual check").
 
-Pass 1 = Whisper "small" transcribes the full clip, now actually recording a
-per-word confidence score (previously discarded -- flagging.py's confidence
-flagging was silently dead code before this fix).
+Pass 1 = Whisper "small" transcribes the full clip, recording a per-word
+confidence score (previously discarded -- flagging.py's confidence flagging
+was silently dead code before this fix).
+
 Pass 2 = any segment with a low-confidence word gets its audio re-cut and
-re-transcribed with a larger model ("medium"), spliced back in.
+re-decoded with the SAME small model, but using beam search (beam_size=5,
+best_of=5) instead of the default greedy decode, and the improved words are
+spliced back in.
+
+IMPORTANT HISTORY: pass 2 originally loaded a larger "medium" Whisper model
+instead of re-decoding with the same model. That OOM-crashed the whole Degas
+service in production on 2026-08-18 -- the server has 3.7GB RAM total, and
+"medium" needs roughly 4-5GB in CPU/FP32 mode on top of "small" already being
+resident. The beam-search-on-the-same-model approach fixes this: pass 2 now
+never loads a second model, so it cannot repeat that crash. Don't reintroduce
+a second model here without re-checking actual server memory first.
+
 Pass 3 = the existing manual Caption Review UI -- not automated, intentionally.
 
 Whisper and ffmpeg are both mocked so this runs without real audio, a real
@@ -20,7 +32,7 @@ Run with: python -m pytest test_two_pass_transcription.py -v
 import json
 import os
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -54,8 +66,8 @@ def _fake_pass1_result():
 
 
 def _fake_pass2_result():
-    # The re-transcribed (cut, padded) audio -- times are relative to the
-    # start of the extracted clip, not the full video.
+    # The re-decoded (cut, padded) audio -- times are relative to the start
+    # of the extracted clip, not the full video.
     return {
         "segments": [
             {
@@ -72,24 +84,29 @@ def _fake_pass2_result():
 
 
 class FakeWhisperModel:
-    def __init__(self, result):
-        self._result = result
+    """Same model instance used for both pass 1 (whole clip, default decode)
+    and pass 2 (short segment, beam search decode) -- exactly like production,
+    where get_model() is called both times and returns the same object."""
 
-    def transcribe(self, path, word_timestamps=True):
-        return self._result
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, path, **kwargs):
+        self.calls.append({"path": path, "kwargs": kwargs})
+        if len(self.calls) == 1:
+            return _fake_pass1_result()
+        return _fake_pass2_result()
 
 
 def test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment():
-    pass1_model = FakeWhisperModel(_fake_pass1_result())
-    pass2_model = FakeWhisperModel(_fake_pass2_result())
-    pass2_calls = []
+    model = FakeWhisperModel()
+    pass2_extract_calls = []
 
     def fake_extract(video_path, start, end, pad=0.3):
-        pass2_calls.append((start, end))
+        pass2_extract_calls.append((start, end))
         return "/tmp/fake_extracted.wav", max(0.0, start - pad)
 
-    with patch.object(transcription, "get_model", return_value=pass1_model), \
-         patch.object(transcription, "get_pass2_model", return_value=pass2_model), \
+    with patch.object(transcription, "get_model", return_value=model), \
          patch.object(transcription, "_extract_audio_segment", side_effect=fake_extract), \
          patch("os.path.exists", return_value=False):  # skip the temp-file cleanup branch
 
@@ -103,7 +120,16 @@ def test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment():
         segments = json.load(f)
 
     # Pass 2 should have run exactly once, only for the low-confidence segment (2.0-4.0)
-    assert pass2_calls == [(2.0, 4.0)], f"expected pass 2 only on the shaky segment, got {pass2_calls}"
+    assert pass2_extract_calls == [(2.0, 4.0)], f"expected pass 2 only on the shaky segment, got {pass2_extract_calls}"
+
+    # Only 2 total transcribe() calls: one full-clip pass 1, one segment-level pass 2.
+    # No second model was ever loaded -- both calls used the same FakeWhisperModel.
+    assert len(model.calls) == 2
+
+    # Pass 2's call must actually request beam search, not the default greedy decode.
+    pass2_kwargs = model.calls[1]["kwargs"]
+    assert pass2_kwargs.get("beam_size") == transcription.PASS2_BEAM_SIZE
+    assert pass2_kwargs.get("best_of") == transcription.PASS2_BEST_OF
 
     # Segment 1 (high confidence) must be untouched by pass 2
     assert segments[0]["text"] == "Hello there friend"
@@ -123,11 +149,19 @@ def test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment():
     os.remove(segments_path)
 
 
-def test_pass2_falls_back_to_pass1_words_on_failure():
-    pass1_model = FakeWhisperModel(_fake_pass1_result())
+def test_pass2_never_loads_a_second_model():
+    # Regression test for the actual production incident: transcription.py
+    # must not define/use any kind of second, larger model anywhere.
+    source = open("transcription.py").read()
+    assert 'load_model("medium")' not in source, "pass 2 must not load a second, larger model -- see test docstring"
+    assert not hasattr(transcription, "get_pass2_model"), "pass 2 must reuse get_model(), not a second model loader"
 
-    with patch.object(transcription, "get_model", return_value=pass1_model), \
-         patch.object(transcription, "_rerun_segment_with_bigger_model", return_value=None):
+
+def test_pass2_falls_back_to_pass1_words_on_failure():
+    model = FakeWhisperModel()
+
+    with patch.object(transcription, "get_model", return_value=model), \
+         patch.object(transcription, "_rerun_segment_with_careful_decode", return_value=None):
 
         words_path = "/tmp/test_words_fallback.json"
         segments_path = "/tmp/test_segments_fallback.json"
@@ -145,9 +179,9 @@ def test_pass2_falls_back_to_pass1_words_on_failure():
 
 
 def test_flagging_now_actually_flags_low_confidence_words():
-    # This is the regression test for the original bug: flagging.py expected
-    # a "confidence" key that transcription.py never wrote, so nothing was
-    # ever flagged. Confirm the two now actually connect.
+    # This is the regression test for the original dead-code bug: flagging.py
+    # expected a "confidence" key that transcription.py never wrote, so
+    # nothing was ever flagged. Confirm the two now actually connect.
     words = [
         {"word": "clear", "start": 0.0, "end": 0.5, "confidence": 0.95},
         {"word": "shaky", "start": 0.5, "end": 1.0, "confidence": 0.4},
@@ -162,6 +196,8 @@ def test_flagging_now_actually_flags_low_confidence_words():
 if __name__ == "__main__":
     test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment()
     print("PASS: test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment")
+    test_pass2_never_loads_a_second_model()
+    print("PASS: test_pass2_never_loads_a_second_model")
     test_pass2_falls_back_to_pass1_words_on_failure()
     print("PASS: test_pass2_falls_back_to_pass1_words_on_failure")
     test_flagging_now_actually_flags_low_confidence_words()
