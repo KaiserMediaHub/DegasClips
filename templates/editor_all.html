@@ -16,6 +16,7 @@
     .bulk-segment-time{font-size:11px;color:var(--text-muted);font-family:monospace;white-space:nowrap;padding-top:8px;min-width:110px}
     .bulk-segment textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;line-height:1.5;padding:8px 12px;resize:vertical;font-family:inherit}
     .bulk-segment textarea:focus{outline:none;border-color:var(--accent)}
+    .bulk-segment textarea.flagged{border-color:var(--danger)}
     .clip-body{display:flex;gap:0;align-items:flex-start}
     .clip-video-side{width:360px;min-width:360px;padding:16px;position:sticky;top:60px}
     .clip-video-wrap{display:none;background:var(--bg);padding:12px 20px;border-bottom:1px solid var(--border)}
@@ -46,6 +47,8 @@
         <span class="bulk-clip-title">{{ item.clip.original_filename }}</span>
         <div style="display:flex;align-items:center;gap:12px">
           <span class="bulk-clip-count">{{ item.segments|length }} segment{{ 's' if item.segments|length != 1 }}</span>
+          {% set flagged_count = item.segments|selectattr('flagged')|list|length %}
+          {% if flagged_count %}<span class="flagged-badge" title="Segments Whisper wasn't confident about — double-check these">⚠ {{ flagged_count }} to review</span>{% endif %}
           <button class="preview-btn" onclick="toggleVideo(this, {{ project.id }}, {{ item.clip.id }})">▶ Preview</button>
           <button class="preview-btn" id="save-btn-{{ item.clip.id }}" onclick="saveClip({{ project.id }}, {{ item.clip.id }})">Save</button>
         </div>
@@ -58,8 +61,8 @@
         {% if item.segments %}
           {% for seg in item.segments %}
           <div class="bulk-segment">
-            <div class="bulk-segment-time">{{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }} to {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}</div>
-            <textarea class="segment-text" data-start="{{ seg.start }}" data-end="{{ seg.end }}" rows="2">{{ seg.text }}</textarea>
+            <div class="bulk-segment-time">{{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }} to {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}{% if seg.flagged %} <span class="flagged-badge" title="Whisper wasn't confident about a word here">⚠</span>{% endif %}</div>
+            <textarea class="segment-text{% if seg.flagged %} flagged{% endif %}" data-start="{{ seg.start }}" data-end="{{ seg.end }}" rows="2">{{ seg.text }}</textarea>
           </div>
           {% endfor %}
         {% else %}

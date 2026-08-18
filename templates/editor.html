@@ -45,13 +45,14 @@
 
     <div id="segments-container">
       {% for seg in segments %}
-      <div class="segment" data-index="{{ loop.index0 }}">
+      <div class="segment{% if seg.flagged %} flagged{% endif %}" data-index="{{ loop.index0 }}">
         <div class="segment-time"
              onclick="seekVideo({{ seg.start }})"
              title="Click to jump to {{ '%.1f'|format(seg.start) }}s">
           {{ '%02d'|format((seg.start // 60)|int) }}:{{ '%05.2f'|format(seg.start % 60) }}
           →
           {{ '%02d'|format((seg.end // 60)|int) }}:{{ '%05.2f'|format(seg.end % 60) }}
+          {% if seg.flagged %}<span class="flagged-badge" title="Whisper wasn't confident about a word in this segment — double-check it">⚠ low confidence</span>{% endif %}
         </div>
         <textarea
           class="segment-text"

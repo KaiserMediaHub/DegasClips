@@ -590,10 +590,16 @@ def editor_all(project_id):
     for clip in clips:
         import os, json
         segments_path = os.path.join(UPLOAD_FOLDER, str(project_id), f"{clip['id']}.segments.json")
+        words_path = os.path.join(UPLOAD_FOLDER, str(project_id), f"{clip['id']}.words.json")
         segments = []
+        words = []
         if os.path.exists(segments_path):
             with open(segments_path, "r", encoding="utf-8") as f2:
                 segments = json.load(f2)
+        if os.path.exists(words_path):
+            with open(words_path, "r", encoding="utf-8") as f2:
+                words = json.load(f2)
+        segments = flagging.annotate_segments_with_flags(segments, words)
         clips_data.append({"clip": clip, "segments": segments})
     return render_template("editor_all.html", project=proj, clips_data=clips_data)
 

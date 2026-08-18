@@ -447,6 +447,7 @@ input:focus, textarea:focus {
   transition: border-color .15s;
 }
 .segment:focus-within { border-color: var(--accent); }
+.segment.flagged { border-color: var(--danger); }
 .segment-time {
   font-size: 11px;
   color: var(--accent);
@@ -455,6 +456,16 @@ input:focus, textarea:focus {
   cursor: pointer;
 }
 .segment-time:hover { text-decoration: underline; }
+.flagged-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 8px;
+}
 .segment-text {
   width: 100%;
   background: transparent;
