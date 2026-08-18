@@ -19,12 +19,21 @@ HISTORY, in order:
 2. First fix: pass 2 re-decoded with the SAME small model plus beam search,
    avoiding a second model entirely. Safe, but a real accuracy ceiling since
    it can't fix anything "small" fundamentally doesn't know.
-3. Current version (this file): switched the whole library from
-   openai-whisper to faster-whisper (CTranslate2), which supports int8
-   quantization -- roughly 1/4 the memory of FP32 for the same model. This
-   makes a genuinely bigger "medium" model safe to load for pass 2. Do not
-   revert to full-precision/openai-whisper without re-checking actual
-   server memory headroom first.
+3. Switched the whole library from openai-whisper to faster-whisper
+   (CTranslate2), which supports int8 quantization -- roughly 1/4 the
+   memory of FP32 for the same model. This makes a genuinely bigger
+   "medium" model safe to load for pass 2. Do not revert to full-precision/
+   openai-whisper without re-checking actual server memory headroom first.
+4. Found in real use (2026-08-18): pass 2's padded re-transcription bled
+   into the NEXT segment's audio and duplicated a phrase ("of that"
+   appeared twice). Fixed by trimming any pass-2 word outside this
+   segment's own [start, end].
+5. That trim then over-corrected (2026-08-18, same day): a real trailing
+   word ("you know" -> just "you") got clipped because pass 1's OWN
+   declared segment boundary was imprecise -- unsurprising, since this
+   exact segment was flagged for being uncertain in the first place. Fixed
+   by trimming against the NEIGHBORING segments' boundaries instead of this
+   segment's own -- see _rerun_segment_with_bigger_model's docstring.
 
 Pass 3 = the existing manual Caption Review UI -- not automated, intentionally.
 
@@ -59,8 +68,13 @@ def _segment(start, end, text, words):
 
 
 def _fake_pass1_segments():
-    # Segment 1: all high confidence -- should NOT trigger pass 2.
-    # Segment 2: one low-confidence word -- SHOULD trigger pass 2.
+    # Segment 0: high confidence -- should NOT trigger pass 2.
+    # Segment 1: one low-confidence word -- SHOULD trigger pass 2. Its own
+    #   declared end (4.0) is deliberately a little early/imprecise, same
+    #   as real Whisper output for an uncertain stretch of audio.
+    # Segment 2: high confidence, starts at 4.5 -- gives a real gap (4.0 to
+    #   4.5) between segment 1's own (imprecise) end and segment 2's actual
+    #   start, which is exactly the zone pass 2 needs to be allowed to use.
     return [
         _segment(0.0, 2.0, "Hello there friend", [
             _word(" Hello", 0.0, 0.5, 0.98),
@@ -72,28 +86,34 @@ def _fake_pass1_segments():
             _word(" unclear", 2.5, 3.0, 0.60),
             _word(" word", 3.0, 4.0, 0.90),
         ]),
+        _segment(4.5, 6.0, "Totally different sentence", [
+            _word(" Totally", 4.5, 4.8, 0.99),
+            _word(" different", 4.8, 5.3, 0.98),
+            _word(" sentence", 5.3, 6.0, 0.97),
+        ]),
     ]
 
 
 def _fake_pass2_segments():
-    # The re-transcribed (cut, padded) audio -- times are relative to the
-    # start of the extracted clip, not the full video. Includes a word that
-    # bleeds past the padded window into what was actually the NEXT
-    # segment's speech -- this is the exact real-world bug found in
-    # production (2026-08-18): "of that" got transcribed twice because pass
-    # 2's padding picked up the start of the next segment's audio, and that
-    # bled-over word wasn't trimmed before being spliced in.
+    # The re-transcribed (cut, padded) audio for segment 1 -- times are
+    # relative to the start of the extracted clip, not the full video.
+    # clip_start = 2.0 - 0.3 = 1.7.
     return [
-        _segment(0.0, 2.5, "Bundled up clear word next", [
+        _segment(0.0, 3.1, "Bundled up clear word know next", [
             _word(" Bundled", 0.1, 0.6, 0.97),
             _word(" up", 0.6, 0.9, 0.96),
             _word(" clear", 0.9, 1.4, 0.94),
             _word(" word", 1.4, 1.9, 0.99),
-            # local 2.3 -> full timeline 1.7 (clip_start) + 2.3 = 4.0, right
-            # at the segment's original end (2.0-4.0) -- but this word at
-            # local 2.4-2.6 maps to 4.1-4.3, past segment["end"]=4.0, so it
-            # belongs to the NEXT segment's speech and must be dropped.
-            _word(" next", 2.4, 2.6, 0.93),
+            # local 2.3-2.6 -> full timeline 4.0-4.3. Past segment 1's OWN
+            # declared end (4.0) but well before segment 2's real start
+            # (4.5) -- this is the "you know" case: a legitimate trailing
+            # word pass 1 just didn't bound tightly enough. Must be KEPT.
+            _word(" know", 2.3, 2.6, 0.93),
+            # local 2.9-3.1 -> full timeline 4.6-4.8. This is INSIDE segment
+            # 2's real territory (4.5-6.0) -- genuine padding bleed into the
+            # next segment's actual speech, same shape as the "of that"
+            # duplication bug. Must be TRIMMED.
+            _word(" next", 2.9, 3.1, 0.90),
         ]),
     ]
 
@@ -149,23 +169,33 @@ def test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment():
     assert pass2_kwargs.get("beam_size") == transcription.PASS2_BEAM_SIZE
     assert pass2_kwargs.get("best_of") == transcription.PASS2_BEST_OF
 
-    # Segment 1 (high confidence) must be untouched by pass 2
+    # Segment 0 (high confidence) must be untouched by pass 2
     assert segments[0]["text"] == "Hello there friend"
     assert all(not w.get("revised") for w in segments[0]["words"])
 
-    # Segment 2 must now contain pass 2's improved words, remapped onto the full timeline --
-    # and "next" (which bled past the segment's original 4.0s end into the following
-    # segment's speech) must be trimmed out, not duplicated.
-    assert segments[1]["text"] == "Bundled up clear word"
+    # Segment 2 (high confidence, never sent through pass 2) must also be untouched
+    assert segments[2]["text"] == "Totally different sentence"
+    assert all(not w.get("revised") for w in segments[2]["words"])
+
+    # Segment 1 must contain pass 2's improved words, remapped onto the full timeline.
+    # "know" extends past segment 1's OWN (imprecise) declared end but stays well
+    # short of segment 2's real start -- it's legitimate speech and must be KEPT
+    # (this is the "you know" -> "you" bug). "next" actually overlaps segment 2's
+    # real territory -- genuine padding bleed -- and must be TRIMMED (this is the
+    # "of that" duplication bug).
+    assert segments[1]["text"] == "Bundled up clear word know", segments[1]["text"]
     assert all(w.get("revised") for w in segments[1]["words"])
-    assert "next" not in segments[1]["text"], "bled-over word from the padding zone must be trimmed"
     # clip_start for segment starting at 2.0 with pad 0.3 = 1.7; pass2 word at
     # local 0.1 -> should land at 1.7 + 0.1 = 1.8 on the full timeline
     assert abs(segments[1]["words"][0]["start"] - 1.8) < 0.01
 
-    # Flat word list must be rebuilt from the (possibly revised) segments, with the
-    # bled-over "next" excluded
-    assert [w["word"] for w in words] == ["Hello", "there", "friend", "Bundled", "up", "clear", "word"]
+    # Flat word list must be rebuilt from the (possibly revised) segments, with
+    # "know" kept and the bled-over "next" excluded
+    assert [w["word"] for w in words] == [
+        "Hello", "there", "friend",
+        "Bundled", "up", "clear", "word", "know",
+        "Totally", "different", "sentence",
+    ]
 
     os.remove(words_path)
     os.remove(segments_path)

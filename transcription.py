@@ -100,10 +100,26 @@ def _words_from_segments(segments):
     return all_segments
 
 
-def _rerun_segment_with_bigger_model(video_path, segment):
+def _rerun_segment_with_bigger_model(video_path, segment, min_time=None, max_time=None):
     """Pass 2: re-transcribes one low-confidence segment's audio with the
     larger int8-quantized model, using beam search, and returns fresh word
     dicts with timestamps remapped back onto the full video's timeline.
+
+    min_time/max_time define the "safe zone" this segment is allowed to
+    claim words from -- the previous segment's end and the next segment's
+    start, NOT this segment's own start/end. This distinction matters: this
+    segment's own boundaries came from pass 1, which was already uncertain
+    about this exact stretch of audio (that's why it got flagged), so its
+    timing can be slightly off too. Trimming to this segment's own
+    boundary was tried first and cut off real trailing words (e.g. "you
+    know" got clipped down to just "you") whenever pass 1's guessed
+    boundary landed a little early. Trimming to the NEIGHBORING segments'
+    boundaries instead only discards a word if it overlaps territory a
+    neighbor already owns -- which is what actually causes duplication --
+    while letting this segment claim as much of the gap between segments
+    as the re-transcription actually found. If a neighbor doesn't exist
+    (first/last segment) or isn't provided, that side is unbounded.
+
     Returns None (rather than raising) if anything goes wrong -- ffmpeg
     missing, corrupt audio, etc -- so the caller can just fall back to pass
     1's words for that segment instead of failing the whole transcription
@@ -127,15 +143,13 @@ def _rerun_segment_with_bigger_model(video_path, segment):
             for w in (seg.words or []):
                 word_start = round(w.start + clip_start, 3)
                 word_end = round(w.end + clip_start, 3)
-                # _extract_audio_segment pads the cut audio with extra
-                # context on both sides, so the re-transcription can pick up
-                # a few words that actually belong to the previous/next
-                # segment's speech, not this one. Trim to words whose
-                # midpoint falls inside this segment's ORIGINAL (unpadded)
-                # boundaries, so a padding-zone word doesn't get spliced in
-                # here AND left untouched in its real segment -- a duplicate.
+                # Only exclude a word if it actually overlaps a neighboring
+                # segment's own territory -- that's the real duplication
+                # risk from the padding this clip was cut with.
                 midpoint = (word_start + word_end) / 2
-                if midpoint < segment["start"] or midpoint > segment["end"]:
+                if min_time is not None and midpoint < min_time:
+                    continue
+                if max_time is not None and midpoint > max_time:
                     continue
                 new_words.append({
                     "word":       w.word.strip(),
@@ -182,10 +196,14 @@ def transcribe(video_path, words_path, segments_path, original_path=None):
     all_segments = _words_from_segments(segments)
 
     # Pass 2: re-check any segment pass 1 flagged as low-confidence.
-    for segment in all_segments:
+    for i, segment in enumerate(all_segments):
         if not any(w["confidence"] < LOW_CONFIDENCE_THRESHOLD for w in segment["words"]):
             continue
-        revised_words = _rerun_segment_with_bigger_model(video_path, segment)
+        # Neighboring segments' boundaries, not this segment's own -- see
+        # _rerun_segment_with_bigger_model's docstring for why.
+        min_time = all_segments[i - 1]["end"] if i > 0 else None
+        max_time = all_segments[i + 1]["start"] if i + 1 < len(all_segments) else None
+        revised_words = _rerun_segment_with_bigger_model(video_path, segment, min_time, max_time)
         if not revised_words:
             continue  # pass 2 failed or found nothing better -- keep pass 1's words, still flagged
         segment["words"] = revised_words
