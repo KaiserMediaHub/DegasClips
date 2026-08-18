@@ -77,13 +77,23 @@ def _fake_pass1_segments():
 
 def _fake_pass2_segments():
     # The re-transcribed (cut, padded) audio -- times are relative to the
-    # start of the extracted clip, not the full video.
+    # start of the extracted clip, not the full video. Includes a word that
+    # bleeds past the padded window into what was actually the NEXT
+    # segment's speech -- this is the exact real-world bug found in
+    # production (2026-08-18): "of that" got transcribed twice because pass
+    # 2's padding picked up the start of the next segment's audio, and that
+    # bled-over word wasn't trimmed before being spliced in.
     return [
-        _segment(0.0, 2.0, "Bundled up clear word", [
+        _segment(0.0, 2.5, "Bundled up clear word next", [
             _word(" Bundled", 0.1, 0.6, 0.97),
             _word(" up", 0.6, 0.9, 0.96),
             _word(" clear", 0.9, 1.4, 0.94),
             _word(" word", 1.4, 1.9, 0.99),
+            # local 2.3 -> full timeline 1.7 (clip_start) + 2.3 = 4.0, right
+            # at the segment's original end (2.0-4.0) -- but this word at
+            # local 2.4-2.6 maps to 4.1-4.3, past segment["end"]=4.0, so it
+            # belongs to the NEXT segment's speech and must be dropped.
+            _word(" next", 2.4, 2.6, 0.93),
         ]),
     ]
 
@@ -143,14 +153,18 @@ def test_pass1_records_confidence_and_pass2_only_hits_low_confidence_segment():
     assert segments[0]["text"] == "Hello there friend"
     assert all(not w.get("revised") for w in segments[0]["words"])
 
-    # Segment 2 must now contain pass 2's improved words, remapped onto the full timeline
+    # Segment 2 must now contain pass 2's improved words, remapped onto the full timeline --
+    # and "next" (which bled past the segment's original 4.0s end into the following
+    # segment's speech) must be trimmed out, not duplicated.
     assert segments[1]["text"] == "Bundled up clear word"
     assert all(w.get("revised") for w in segments[1]["words"])
+    assert "next" not in segments[1]["text"], "bled-over word from the padding zone must be trimmed"
     # clip_start for segment starting at 2.0 with pad 0.3 = 1.7; pass2 word at
     # local 0.1 -> should land at 1.7 + 0.1 = 1.8 on the full timeline
     assert abs(segments[1]["words"][0]["start"] - 1.8) < 0.01
 
-    # Flat word list must be rebuilt from the (possibly revised) segments
+    # Flat word list must be rebuilt from the (possibly revised) segments, with the
+    # bled-over "next" excluded
     assert [w["word"] for w in words] == ["Hello", "there", "friend", "Bundled", "up", "clear", "word"]
 
     os.remove(words_path)

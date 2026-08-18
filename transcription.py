@@ -125,10 +125,22 @@ def _rerun_segment_with_bigger_model(video_path, segment):
         new_words = []
         for seg in segments:
             for w in (seg.words or []):
+                word_start = round(w.start + clip_start, 3)
+                word_end = round(w.end + clip_start, 3)
+                # _extract_audio_segment pads the cut audio with extra
+                # context on both sides, so the re-transcription can pick up
+                # a few words that actually belong to the previous/next
+                # segment's speech, not this one. Trim to words whose
+                # midpoint falls inside this segment's ORIGINAL (unpadded)
+                # boundaries, so a padding-zone word doesn't get spliced in
+                # here AND left untouched in its real segment -- a duplicate.
+                midpoint = (word_start + word_end) / 2
+                if midpoint < segment["start"] or midpoint > segment["end"]:
+                    continue
                 new_words.append({
                     "word":       w.word.strip(),
-                    "start":      round(w.start + clip_start, 3),
-                    "end":        round(w.end + clip_start, 3),
+                    "start":      word_start,
+                    "end":        word_end,
                     "confidence": round(w.probability, 4),
                     "revised":    True,
                 })
