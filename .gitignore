@@ -24,3 +24,9 @@ env/
 .idea/
 output/
 *.bak-*
+
+# Cross-process transcription lock (created at runtime, machine-local)
+.transcribe.lock
+
+# Local backup archives -- never belong in git (blew past GitHub's 100MB limit on 2026-08-19)
+*.tar.gz

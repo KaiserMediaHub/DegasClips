@@ -4,6 +4,11 @@ import threading
 import time
 import uuid
 
+try:
+    import fcntl  # POSIX only (Hetzner server). Not available on Windows.
+except ImportError:
+    fcntl = None
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -30,8 +35,20 @@ MAX_CONTENT_MB    = int(os.environ.get("MAX_CONTENT_MB", "2048"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_MB * 1024 * 1024
 
 _transcribe_start_times = {}
-_transcribe_semaphore = __import__("threading").Semaphore(1)
 TRANSCRIBE_TIMEOUT = 600
+
+# Cross-process lock so only one transcription runs system-wide at a time --
+# NOT a threading.Semaphore, on purpose. A Semaphore only coordinates threads
+# inside one OS process; once gunicorn runs more than one worker process
+# (separate processes, separate memory), a Semaphore does nothing to stop two
+# workers from each loading a model at once, which is exactly what OOM'd the
+# server on 2026-08-18. fcntl.flock works across processes, so it actually
+# guards the thing that matters (memory), which is what let us put gunicorn
+# back to multiple workers -- 1 worker had been starving Studio's simple
+# requests (e.g. GET /projects/<id>) via GIL contention with the transcription
+# thread, causing Studio's "Couldn't reach Degas... Read timed out" errors
+# (2026-08-19).
+_TRANSCRIBE_LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".transcribe.lock")
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 
@@ -269,10 +286,17 @@ def upload_chunk(project_id):
 
 # ── Transcription ─────────────────────────────────────────────────────────────
 def _run_transcribe(project_id, clip_id, video_path, words_path, segments_path, original_path):
-    _transcribe_semaphore.acquire()
     _transcribe_start_times[clip_id] = time.time()
     db = get_db()
+    lock_file = open(_TRANSCRIBE_LOCK_PATH, "w") if fcntl else None
     try:
+        # Blocks here until any other transcription (this process or another
+        # gunicorn worker) finishes. That's intentional -- only one Whisper
+        # model may be loaded system-wide at a time. On Windows (local dev,
+        # no fcntl) this is a no-op -- fine, since local dev never runs more
+        # than one process anyway.
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
         transcription.transcribe(video_path, words_path, segments_path, original_path)
         db.execute(
             "UPDATE clips SET status = 'transcribed' WHERE id = ?", (clip_id,)
@@ -285,7 +309,9 @@ def _run_transcribe(project_id, clip_id, video_path, words_path, segments_path, 
     finally:
         db.commit()
         db.close()
-        _transcribe_semaphore.release()
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
 
 
 @app.route("/projects/<int:project_id>/clips/<int:clip_id>/transcribe", methods=["POST"])

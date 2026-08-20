@@ -6,7 +6,7 @@ After=network.target
 User=root
 WorkingDirectory=/opt/degas-clips
 EnvironmentFile=/opt/degas-clips/.env
-ExecStart=/opt/degas-clips/venv/bin/gunicorn app:app --workers 1 --timeout 300 --bind 0.0.0.0:5000
+ExecStart=/opt/degas-clips/venv/bin/gunicorn app:app --workers 2 --timeout 300 --bind 0.0.0.0:5000
 Restart=always
 RestartSec=5
 
