@@ -154,6 +154,17 @@ def _rerun_segment_with_careful_decode(video_path, segment, min_time=None, max_t
                     "end":        word_end,
                     "confidence": round(w.probability, 4),
                     "revised":    True,
+                    # Transient -- popped off before these dicts are stored
+                    # (see transcribe()). Whisper's raw word tokens already
+                    # carry correct spacing: a token starting a new word has
+                    # a leading space, a token continuing a hyphenated
+                    # compound or contraction (e.g. "-led", "'s") does not.
+                    # Reconstructing text with an unconditional " ".join
+                    # (the old behavior) destroys that distinction and
+                    # inserts a space Whisper never intended -- "operator"
+                    # + "-led" becomes "operator -led" instead of
+                    # "operator-led" (Ben's report, 2026-09-11).
+                    "_raw":       w.word,
                 })
         return new_words or None
     except Exception:
@@ -204,8 +215,12 @@ def transcribe(video_path, words_path, segments_path, original_path=None):
         revised_words = _rerun_segment_with_careful_decode(video_path, segment, min_time, max_time)
         if not revised_words:
             continue  # pass 2 failed or found nothing better -- keep pass 1's words, still flagged
+        # Reconstruct text from Whisper's own natural spacing (see the
+        # "_raw" comment in _rerun_segment_with_careful_decode) rather than
+        # forcing a space between every word -- then pop "_raw" off so the
+        # stored word dicts keep the exact same shape they always had.
+        segment["text"] = "".join(w.pop("_raw") for w in revised_words).strip()
         segment["words"] = revised_words
-        segment["text"] = " ".join(w["word"] for w in revised_words).strip()
 
     # Flat word list is derived from the (possibly pass-2-revised) segments,
     # since pass 2 can change word counts/timestamps within a segment.

@@ -232,6 +232,87 @@ def test_pass2_falls_back_to_pass1_words_on_failure():
     os.remove(segments_path)
 
 
+def _fake_pass1_segments_for_hyphen_test():
+    return [
+        _segment(0.0, 2.0, "This is operator led growth", [
+            _word(" This", 0.0, 0.3, 0.98),
+            _word(" is", 0.3, 0.5, 0.97),
+            _word(" operator", 0.5, 1.0, 0.55),  # low confidence -> triggers pass 2
+            _word(" led", 1.0, 1.3, 0.60),
+            _word(" growth", 1.3, 2.0, 0.96),
+        ]),
+    ]
+
+
+def _fake_pass2_segments_hyphenated():
+    # Whisper's real tokenizer emits a hyphenated continuation WITHOUT a
+    # leading space -- "-led" attaches directly to "operator", unlike a new
+    # word like " growth" which does get a leading space. This is the exact
+    # shape that used to produce "operator -led" instead of "operator-led".
+    return [
+        _segment(0.0, 1.5, "operator-led growth", [
+            _word(" operator", 0.2, 0.7, 0.97),
+            _word("-led", 0.7, 1.0, 0.95),
+            _word(" growth", 1.0, 1.5, 0.98),
+        ]),
+    ]
+
+
+class FakeModelHyphen:
+    def __init__(self):
+        self.calls = []
+
+    def transcribe(self, path, **kwargs):
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            return _fake_pass1_segments_for_hyphen_test(), SimpleNamespace(language="en")
+        return _fake_pass2_segments_hyphenated(), SimpleNamespace(language="en")
+
+
+def test_pass2_reconstructs_hyphenated_words_without_extra_space():
+    """Regression test for Ben's report (2026-09-11, found during Caption
+    Review): pass-2-revised segment text was inserting a space before
+    hyphenated continuations -- "operator -led" instead of "operator-led"
+    -- because text used to be rebuilt with an unconditional " ".join over
+    every word, destroying Whisper's own leading-space-vs-no-leading-space
+    distinction between a new word and a compound/contraction continuation.
+    Pass 2 is the relevant path because Caption Review surfaces exactly the
+    low-confidence segments that go through it."""
+    model = FakeModelHyphen()
+
+    def fake_extract(video_path, start, end, pad=0.3):
+        return "/tmp/fake_extracted_hyphen.wav", max(0.0, start - pad)
+
+    with patch.object(transcription, "get_model", return_value=model), \
+         patch.object(transcription, "_extract_audio_segment", side_effect=fake_extract), \
+         patch("os.path.exists", return_value=False):
+
+        words_path = "/tmp/test_words_hyphen.json"
+        segments_path = "/tmp/test_segments_hyphen.json"
+        transcription.transcribe("fake_video.mp4", words_path, segments_path)
+
+    with open(segments_path) as f:
+        segments = json.load(f)
+    with open(words_path) as f:
+        words = json.load(f)
+
+    assert segments[0]["text"] == "operator-led growth", segments[0]["text"]
+
+    # Stored per-word "word" values must still be individually clean (no
+    # leading/trailing whitespace) -- only the joined segment TEXT changed,
+    # not the word-storage schema other consumers (flagging.py, Studio's
+    # Caption Review UI) depend on.
+    assert [w["word"] for w in words] == ["operator", "-led", "growth"], words
+    assert not any(w["word"].startswith(" ") or w["word"].endswith(" ") for w in words)
+
+    # The transient reconstruction field must never leak into stored JSON.
+    assert not any("_raw" in w for w in words)
+    assert not any("_raw" in w for w in segments[0]["words"])
+
+    os.remove(words_path)
+    os.remove(segments_path)
+
+
 def test_flagging_threshold_raised_to_catch_confidently_wrong_words():
     # Regression test for the actual production incident: a word scoring
     # 0.85 (confident enough to have slipped past the old 0.8 threshold)
@@ -255,6 +336,8 @@ if __name__ == "__main__":
     print("PASS: test_pass2_never_loads_a_second_model")
     test_pass2_falls_back_to_pass1_words_on_failure()
     print("PASS: test_pass2_falls_back_to_pass1_words_on_failure")
+    test_pass2_reconstructs_hyphenated_words_without_extra_space()
+    print("PASS: test_pass2_reconstructs_hyphenated_words_without_extra_space")
     test_flagging_threshold_raised_to_catch_confidently_wrong_words()
     print("PASS: test_flagging_threshold_raised_to_catch_confidently_wrong_words")
     print("\nALL TESTS PASSED")
