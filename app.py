@@ -51,6 +51,9 @@ TRANSCRIBE_TIMEOUT = 600
 _TRANSCRIBE_LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".transcribe.lock")
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
+ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav"}
+PODCAST_AUDIO_FOLDER = os.path.join(UPLOAD_FOLDER, "_podcast_audio")
+os.makedirs(PODCAST_AUDIO_FOLDER, exist_ok=True)
 
 
 @app.template_filter("datestr")
@@ -596,6 +599,168 @@ def download_clip(project_id, clip_id):
         as_attachment=True,
         download_name=f"{base}_captioned.mp4",
     )
+
+
+# ── Standalone audio transcription ──────────────────────────────────────────
+# Studio's Podcast Page Generator tab (Ben's ask, 2026-09-17) needs Whisper
+# transcription for a raw MP3 episode upload that isn't tied to any Degas
+# project/clip. Rather than have Studio load a SECOND Whisper model in its
+# own process -- this server has only 3.7GB RAM total, and a full-precision
+# model is exactly what OOM'd it the first time (see the accuracy-history
+# comment in transcription.py) -- Studio calls this endpoint and Degas
+# reuses its already-loaded medium/int8 model plus the same cross-process
+# file lock used for clip transcription, so a podcast job can never overlap
+# with a clip job and repeat that crash.
+def _run_audio_transcribe(job_id, audio_path):
+    lock_file = open(_TRANSCRIBE_LOCK_PATH, "w") if fcntl else None
+    words_path = audio_path + ".words.json"
+    segments_path = audio_path + ".segments.json"
+    try:
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        transcription.transcribe(audio_path, words_path, segments_path)
+        with open(segments_path, encoding="utf-8") as f:
+            segments = json.load(f)
+        text = " ".join(s["text"] for s in segments if s.get("text")).strip()
+        db = get_db()
+        db.execute(
+            "UPDATE podcast_jobs SET status = 'done', transcript = ? WHERE id = ?",
+            (text, job_id)
+        )
+        db.commit()
+        db.close()
+    except Exception as e:
+        db = get_db()
+        db.execute(
+            "UPDATE podcast_jobs SET status = 'error', error_message = ? WHERE id = ?",
+            (str(e), job_id)
+        )
+        db.commit()
+        db.close()
+    finally:
+        # This audio file and its intermediate transcription JSON only ever
+        # exist to answer this one job -- unlike clip media, nothing else
+        # references them afterward, so clean up rather than accumulate
+        # podcast episode audio on disk indefinitely.
+        for p in (audio_path, words_path, segments_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+
+
+def _start_transcription_job(job_id, audio_path):
+    """Shared by both upload paths below: registers a podcast_jobs row and
+    fires the background transcription thread."""
+    db = get_db()
+    db.execute("INSERT INTO podcast_jobs (id, status) VALUES (?, 'transcribing')", (job_id,))
+    db.commit()
+    db.close()
+    threading.Thread(target=_run_audio_transcribe, args=(job_id, audio_path), daemon=True).start()
+
+
+@app.route("/transcribe-audio", methods=["POST"])
+def transcribe_audio():
+    """Kicks off a standalone transcription job for a raw audio upload.
+    Fire-and-forget, same async pattern as clip transcription: returns a
+    job_id immediately, poll /transcribe-audio/<job_id>/status for the
+    result. Job state lives in the podcast_jobs table, not an in-process
+    dict -- gunicorn runs 2 worker processes, and a POST landing on worker A
+    with a status GET landing on worker B need to see the same state (see
+    the fcntl lock comment above for the same class of bug, resolved the
+    same way: a shared store, not process memory).
+
+    This single-shot route is only safe for small files -- Degas's own
+    nginx accepts it, but Studio's nginx caps browser-originated request
+    bodies at 10MB (see the CHUNK_SIZE comment on /upload/chunk above), and
+    a typical hour-long episode MP3 is well past that. Studio's podcast tab
+    uses the chunked variant below instead; this one exists for small
+    files and for testing."""
+    audio_file = request.files.get("audio")
+    if not audio_file or not audio_file.filename:
+        return jsonify({"error": "audio file is required"}), 400
+    ext = os.path.splitext(audio_file.filename.lower())[1]
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        return jsonify({"error": f"unsupported audio type '{ext}' -- use mp3, m4a, or wav"}), 400
+
+    job_id = uuid.uuid4().hex
+    audio_path = os.path.join(PODCAST_AUDIO_FOLDER, f"{job_id}{ext}")
+    audio_file.save(audio_path)
+
+    _start_transcription_job(job_id, audio_path)
+    return jsonify({"job_id": job_id, "status": "transcribing"})
+
+
+@app.route("/transcribe-audio/chunk", methods=["POST"])
+def transcribe_audio_chunk():
+    """Chunked variant of /transcribe-audio, same reassembly pattern as
+    /projects/<id>/upload/chunk above -- exists because a real podcast
+    episode MP3 (30-100+ MB for an hour-long show) is well past Studio's
+    own nginx's 10MB request-body cap. Studio's browser-facing upload sends
+    ~8MB chunks to its own proxy route, which forwards each one here
+    one-by-one using the same file_uid/chunk_index/total_chunks fields as
+    the video chunk upload. Once the last chunk arrives, reassembles the
+    file and starts the transcription job, returning the job_id instead of
+    a clip filename (there's no project/clip here to register it against).
+
+    Form fields: file_uid, chunk_index, total_chunks, filename, data (file)."""
+    file_uid     = request.form.get("file_uid")
+    chunk_index  = int(request.form.get("chunk_index", 0))
+    total_chunks = int(request.form.get("total_chunks", 1))
+    original     = request.form.get("filename", "episode.mp3")
+    chunk_data   = request.files.get("data")
+
+    if not file_uid or not chunk_data:
+        return jsonify({"error": "missing fields"}), 400
+
+    ext = os.path.splitext(original.lower())[1]
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        return jsonify({"error": f"unsupported audio type '{ext}' -- use mp3, m4a, or wav"}), 400
+
+    temp_dir = os.path.join(PODCAST_AUDIO_FOLDER, "chunks", file_uid)
+    os.makedirs(temp_dir, exist_ok=True)
+    chunk_path = os.path.join(temp_dir, f"{chunk_index:05d}")
+    chunk_data.save(chunk_path)
+
+    saved_chunks = len(os.listdir(temp_dir))
+    if saved_chunks < total_chunks:
+        return jsonify({"status": "chunk_received", "chunks": saved_chunks, "total": total_chunks})
+
+    # All chunks received -- reassemble into one file, named by a fresh
+    # job-scoped uuid (not file_uid, so a retried upload with the same
+    # file_uid can't collide with a job already in flight).
+    job_id = uuid.uuid4().hex
+    audio_path = os.path.join(PODCAST_AUDIO_FOLDER, f"{job_id}{ext}")
+    with open(audio_path, "wb") as out:
+        for i in range(total_chunks):
+            part = os.path.join(temp_dir, f"{i:05d}")
+            with open(part, "rb") as pf:
+                out.write(pf.read())
+
+    import shutil
+    shutil.rmtree(temp_dir)
+
+    _start_transcription_job(job_id, audio_path)
+    return jsonify({"status": "complete", "job_id": job_id})
+
+
+@app.route("/transcribe-audio/<job_id>/status")
+def transcribe_audio_status(job_id):
+    db = get_db()
+    job = db.execute(
+        "SELECT status, transcript, error_message FROM podcast_jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    db.close()
+    if not job:
+        return jsonify({"error": "unknown job_id"}), 404
+    return jsonify({
+        "status": job["status"],
+        "transcript": job["transcript"],
+        "error": job["error_message"],
+    })
 
 
 

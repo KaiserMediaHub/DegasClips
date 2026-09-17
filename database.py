@@ -39,5 +39,22 @@ def init_db():
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     """)
+    # Standalone audio transcription jobs (Studio's Podcast Page Generator
+    # tab, Ben's ask 2026-09-17) -- not tied to any project/clip. This has
+    # to be a DB table, not an in-process dict: gunicorn runs 2 workers
+    # (separate processes, separate memory -- see the fcntl lock comment in
+    # app.py for why that distinction already bit us once, 2026-08-18). A
+    # POST that lands on worker A and a status GET that lands on worker B
+    # need to see the same job state, which only a shared store (SQLite,
+    # here) actually guarantees.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS podcast_jobs (
+            id            TEXT PRIMARY KEY,
+            status        TEXT NOT NULL DEFAULT 'transcribing',
+            transcript    TEXT,
+            error_message TEXT,
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
